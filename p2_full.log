@@ -1,0 +1,19 @@
+========================================
+ WEAVER ENGINE: 8-NODE DEEP HISTORY 
+========================================
+Enter Node ID (0-7): 
+> [SYSTEM] Node 2 bound to :50002. Meshing topology...
+[SYSTEM] Topology Locked. Entering FSM loop.
+[HEARTBEAT] SimTick: 25 | Confirmed: 20 | Hash: 0xC4A3389A
+[HEARTBEAT] SimTick: 25 | Confirmed: 20 | Hash: 0xC4A3389A
+[HEARTBEAT] SimTick: 25 | Confirmed: 20 | Hash: 0xC4A3389A
+[HEARTBEAT] SimTick: 25 | Confirmed: 20 | Hash: 0xC4A3389A
+[HEARTBEAT] SimTick: 25 | Confirmed: 20 | Hash: 0xC4A3389A
+[HEARTBEAT] SimTick: 25 | Confirmed: 20 | Hash: 0xC4A3389A
+[HEARTBEAT] SimTick: 25 | Confirmed: 20 | Hash: 0xC4A3389A
+luajit: ./lua/net_pump.lua:153: interrupted!
+stack traceback:
+	./lua/net_pump.lua:153: in function 'intercept_network'
+	./lua/fsm_core.lua:50: in function 'tick_playing_state'
+	main.lua:124: in main chunk
+	[C]: at 0x55d226472e00

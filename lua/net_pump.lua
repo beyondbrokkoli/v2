@@ -8,6 +8,9 @@ local Pump = {}
 -- Flat memory state tracking what opponents know about us
 local peer_ack_of_me = ffi.new("uint32_t[8]")
 
+-- THE VOID: Adjust this to test the limits of your 64-tick payload
+local CHAOS_PACKET_LOSS = 0.20
+
 function Pump.send_dynamic_history(ctx)
     local current_tick = ctx.sim_tick_count
     local conf_tick = ctx.rollback_arena.confirmed_tick
@@ -71,6 +74,11 @@ function Pump.intercept_network(ctx, current_tick)
     for i = 0, count - 1 do
         local pkt = in_buffer[i]
         local pid = pkt.player_id
+
+        -- THE NETWORK CHAOS FILTER
+        if math.random() < CHAOS_PACKET_LOSS then
+            goto continue_inbox
+        end
 
         if pid < 8 and pkt.frame_tick >= 0 then
             ctx.peer_active[pid] = true
@@ -137,6 +145,8 @@ function Pump.intercept_network(ctx, current_tick)
                 end
             end
         end
+
+        ::continue_inbox::
     end
 
     -- Calculate True Consensus (The minimum 'highest_tick' across all active opponents)

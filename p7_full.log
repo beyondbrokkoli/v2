@@ -1,0 +1,12 @@
+========================================
+ WEAVER ENGINE: 8-NODE DEEP HISTORY 
+========================================
+Enter Node ID (0-7): 
+> [SYSTEM] Node 7 bound to :50007. Meshing topology...
+[SYSTEM] Topology Locked. Entering FSM loop.
+
+[FATAL DESYNC] TRUE Timeline Divergence Detected!
+Consensus Tick: 19 | Peer: P0
+Local Hash:  0xA7039DC5
+Remote Hash: 0xDC03FA59
+

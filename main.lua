@@ -120,14 +120,6 @@ while true do
     last_time = current_time
     ctx.accumulator = ctx.accumulator + frame_time
 
-    -- THE BUTTERFLY EFFECT (CHAOS INJECTION)
-    if ctx.net_identity == 1 and ctx.sim_tick_count == 180 and not ctx.corrupted then
-        -- Node 1 flips a single tile to an impossible value
-        ctx.rts_grid.terrain[0][0] = 999
-        ctx.corrupted = true
-        print("\n[CHAOS INJECTION] Node 1 deliberately corrupted its local memory!\n")
-    end
-
     -- Execute strict phase isolation
     FSM.tick_playing_state(ctx, FIXED_DT, bytes_terrain, bytes_elevation)
 
