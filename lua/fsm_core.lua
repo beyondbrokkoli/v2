@@ -31,7 +31,7 @@ function FSM.tick_playing_state(ctx, FIXED_DT, bytes_terrain, bytes_elevation)
         if frame.tick ~= ctx.sim_tick_count then
             for p = 0, 7 do
                 frame.player_input[p] = 0
-                frame.click_grid_idx[p] = -1
+                frame.click_grid_idx[p] = 65535
             end
             frame.state_checksum = 0
             frame.remote_checksum = 0

@@ -102,6 +102,12 @@ for p = 0, 7 do
     end
 end
 
+-- [FIX]: Frame 0 Snapshot Initialization
+ffi.copy(ctx.snapshot_ring.terrain[0], ctx.rts_grid.terrain, bytes_terrain)
+ffi.copy(ctx.snapshot_ring.elevation[0], ctx.rts_grid.elevation, bytes_elevation)
+local h0_terrain = net.HashState(ctx.rts_grid.terrain, bytes_terrain, 0)
+f0.state_checksum = net.HashState(ctx.rts_grid.elevation, bytes_elevation, h0_terrain)
+
 local TICK_RATE = 60
 local FIXED_DT = 1.0 / TICK_RATE
 local last_time = get_time_hires()

@@ -3,7 +3,7 @@ local bit = require("bit")
 local cfg = require("config_engine")
 local net = require("network")
 
-local CHAOS_PACKET_LOSS = 0.001
+local CHAOS_PACKET_LOSS = 0.01
 
 local Pump = {}
 local peer_ack_of_me = ffi.new("uint32_t[8]")
@@ -83,7 +83,7 @@ function Pump.intercept_network(ctx, current_tick)
                         h_frame.state = cfg.net_state.empty
                         for p_scan = 0, 7 do
                             h_frame.player_input[p_scan] = 0
-                            h_frame.click_grid_idx[p_scan] = -1
+                            h_frame.click_grid_idx[p_scan] = 65535
                         end
                         h_frame.state_checksum = 0
                     end
@@ -106,7 +106,8 @@ function Pump.intercept_network(ctx, current_tick)
                 ctx.peer_highest_tick[pid] = pkt.frame_tick
             end
 
-            if pkt.checksum_tick > 0 and pkt.checksum_tick >= math.max(0, ctx.rollback_arena.confirmed_tick - 60) and pkt.checksum_tick <= ctx.rollback_arena.confirmed_tick then
+            -- [FIX]: Accept checksums up to our currently simulating frame, independent of local consensus lag.
+            if pkt.checksum_tick > 0 and pkt.checksum_tick >= math.max(0, ctx.rollback_arena.confirmed_tick - 60) and pkt.checksum_tick <= current_tick then
                 local c_idx = bit.band(pkt.checksum_tick, 127)
                 local c_frame = ctx.rollback_arena.frames[c_idx]
                 if c_frame.tick == pkt.checksum_tick then

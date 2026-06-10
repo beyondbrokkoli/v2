@@ -4,4 +4,9 @@
 Enter Node ID (0-7): 
 > [SYSTEM] Node 7 bound to :50007. Meshing topology...
 [SYSTEM] Topology Locked. Entering FSM loop.
-[FATAL DESYNC] Tick: 18 | Local: 0xA7039DC5 | Remote: 0xC4FBDC81
+luajit: ./lua/sim_world.lua:16: attempt to compare number with nil
+stack traceback:
+	./lua/sim_world.lua:16: in function 'update_simulation'
+	./lua/fsm_core.lua:73: in function 'tick_playing_state'
+	main.lua:124: in main chunk
+	[C]: at 0x55bac61aee00
