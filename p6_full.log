@@ -4,18 +4,15 @@
 Enter Node ID (0-7): 
 > [SYSTEM] Node 6 bound to :50006. Meshing topology...
 [SYSTEM] Topology Locked. Entering FSM loop.
-[HEARTBEAT] SimTick: 9 | NetHead: 8 | Confirmed: 5 | Missing: 4 | StateHash: 0xA7039DC5
-[HEARTBEAT] SimTick: 15 | NetHead: 15 | Confirmed: 10 | Missing: 5 | StateHash: 0xB28989B9
-[HEARTBEAT] SimTick: 25 | NetHead: 25 | Confirmed: 20 | Missing: 5 | StateHash: 0xDB7F061A
-[HEARTBEAT] SimTick: 25 | NetHead: 25 | Confirmed: 20 | Missing: 5 | StateHash: 0xDB7F061A
-[HEARTBEAT] SimTick: 35 | NetHead: 35 | Confirmed: 30 | Missing: 5 | StateHash: 0x48658AF4
-[HEARTBEAT] SimTick: 40 | NetHead: 40 | Confirmed: 35 | Missing: 5 | StateHash: 0x48658AF4
-[HEARTBEAT] SimTick: 48 | NetHead: 48 | Confirmed: 43 | Missing: 5 | StateHash: 0x65FAD159
-[HEARTBEAT] SimTick: 48 | NetHead: 48 | Confirmed: 43 | Missing: 5 | StateHash: 0x65FAD159
-[HEARTBEAT] SimTick: 55 | NetHead: 55 | Confirmed: 50 | Missing: 5 | StateHash: 0x20993B01
-[HEARTBEAT] SimTick: 62 | NetHead: 62 | Confirmed: 57 | Missing: 5 | StateHash: 0x5CE1193E
-[HEARTBEAT] SimTick: 66 | NetHead: 66 | Confirmed: 61 | Missing: 5 | StateHash: 0x5CE1193E
-[HEARTBEAT] SimTick: 68 | NetHead: 68 | Confirmed: 63 | Missing: 5 | StateHash: 0x5CE1193E
-[HEARTBEAT] SimTick: 73 | NetHead: 73 | Confirmed: 68 | Missing: 5 | StateHash: 0x1FFC98FC
-[HEARTBEAT] SimTick: 78 | NetHead: 78 | Confirmed: 73 | Missing: 5 | StateHash: 0x1FFC98FC
-[HEARTBEAT] SimTick: 83 | NetHead: 83 | Confirmed: 78 | Missing: 5 | StateHash: 0x1FFC98FC
+[HEARTBEAT] SimTick: 10 | NetHead: 10 | Confirmed: 5 | Missing: 5 | StateHash: 0xA7039DC5
+[HEARTBEAT] SimTick: 15 | NetHead: 15 | Confirmed: 10 | Missing: 5 | StateHash: 0x1EA02F59
+[HEARTBEAT] SimTick: 25 | NetHead: 25 | Confirmed: 20 | Missing: 5 | StateHash: 0x46A2B42A
+[HEARTBEAT] SimTick: 26 | NetHead: 26 | Confirmed: 21 | Missing: 5 | StateHash: 0x46A2B42A
+[HEARTBEAT] SimTick: 35 | NetHead: 35 | Confirmed: 30 | Missing: 5 | StateHash: 0xBCEAD094
+[HEARTBEAT] SimTick: 40 | NetHead: 40 | Confirmed: 35 | Missing: 5 | StateHash: 0xBCEAD094
+[HEARTBEAT] SimTick: 48 | NetHead: 48 | Confirmed: 43 | Missing: 5 | StateHash: 0x8A3BA6C9
+[HEARTBEAT] SimTick: 50 | NetHead: 50 | Confirmed: 45 | Missing: 5 | StateHash: 0x8A3BA6C9
+[HEARTBEAT] SimTick: 58 | NetHead: 58 | Confirmed: 53 | Missing: 5 | StateHash: 0xEF11F3B1
+[HEARTBEAT] SimTick: 60 | NetHead: 60 | Confirmed: 55 | Missing: 5 | StateHash: 0xEF11F3B1
+[HEARTBEAT] SimTick: 60 | NetHead: 60 | Confirmed: 55 | Missing: 5 | StateHash: 0xEF11F3B1
+[HEARTBEAT] SimTick: 65 | NetHead: 65 | Confirmed: 60 | Missing: 5 | StateHash: 0x48E3C93E

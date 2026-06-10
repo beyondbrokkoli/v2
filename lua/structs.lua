@@ -23,7 +23,6 @@ end
 
 M.specs = {
     {
-        -- THE DUMB PIPE PAYLOAD (Over-the-wire UDP Struct)
         name = "LockstepPacket", align = 1, wire_format = true, force_align = true,
         members = {
             { type = "uint64_t", name = "session_token" },
@@ -32,32 +31,31 @@ M.specs = {
             { type = "uint32_t", name = "state_checksum" },
             { type = "uint32_t", name = "ack_tick" },
             { type = "uint32_t", name = "base_tick" },
-            { type = "uint8_t",  name = "player_id" },
-            { type = "uint8_t",  name = "history_count" },
-            { type = "uint8_t",  name = "inputs", count = 64 },
-            { type = "int32_t",  name = "clicks", count = 64 }
+            { type = "uint8_t", name = "player_id" },
+            { type = "uint8_t", name = "history_count" },
+            { type = "uint16_t", name = "_align_pad" }, 
+            { type = "uint32_t", name = "clicks", count = 64 },
+            { type = "uint8_t", name = "inputs", count = 64 }
         }
     },
     {
-        -- SINGLE FRAME (Ouroboros Cell)
         name = "NetworkFrame", align = 4, force_align = true,
         members = {
             { type = "uint32_t", name = "tick" },
-            { type = "uint8_t",  name = "state" },
+            { type = "uint8_t", name = "state" },
             { type = "uint32_t", name = "state_checksum" },
             { type = "uint32_t", name = "remote_checksum" },
-            { type = "uint8_t",  name = "remote_peer_id" },
-            { type = "uint8_t",  name = "player_input", count = 8 },
-            { type = "int32_t",  name = "click_grid_idx", count = 8 }
+            { type = "uint8_t", name = "remote_peer_id" },
+            { type = "uint8_t", name = "player_input", count = 8 },
+            { type = "uint32_t", name = "click_grid_idx", count = 8 }
         }
     },
     {
-        -- THE INTERNAL LUA MEMORY ARENA
         name = "RollbackBuffer", align = 64, force_align = true,
         members = {
             { type = "uint32_t", name = "head_tick" },
             { type = "uint32_t", name = "confirmed_tick" },
-            { type = "uint8_t",  name = "is_rollback_active" },
+            { type = "uint8_t", name = "is_rollback_active" },
             { type = "uint32_t", name = "rollback_target" },
             { type = "NetworkFrame", name = "frames", count = 128 }
         }

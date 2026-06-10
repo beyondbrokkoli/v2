@@ -18,8 +18,9 @@ typedef struct {
     uint32_t base_tick;
     uint8_t player_id;
     uint8_t history_count;
+    uint16_t _align_pad;
+    uint32_t clicks[64];
     uint8_t inputs[64];
-    int32_t clicks[64];
 } LockstepPacket;
 #pragma pack(pop)
 
@@ -32,7 +33,7 @@ typedef struct __attribute__((packed, aligned(4))) {
     uint8_t remote_peer_id;
     uint8_t player_input[8];
     uint8_t _pad_auto_1[3];
-    int32_t click_grid_idx[8];
+    uint32_t click_grid_idx[8];
 } NetworkFrame;
 
 typedef struct __attribute__((packed, aligned(64))) {
