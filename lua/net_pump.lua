@@ -123,6 +123,19 @@ function Pump.intercept_network(ctx, current_tick)
             if pkt.frame_tick > ctx.peer_highest_tick[pid] then
                 ctx.peer_highest_tick[pid] = pkt.frame_tick
             end
+
+            -- TIMELINE CONSENSUS RECEPTOR
+            local c_tick = pkt.checksum_tick
+            if c_tick > 0 and c_tick <= ctx.rollback_arena.confirmed_tick then
+                local c_idx = bit.band(c_tick, 127)
+                local frame = ctx.rollback_arena.frames[c_idx]
+
+                -- Only accept checksums for frames we have completely simulated
+                if frame.tick == c_tick and pkt.state_checksum ~= 0 then
+                    frame.remote_checksum = pkt.state_checksum
+                    frame.remote_peer_id = pid
+                end
+            end
         end
     end
 

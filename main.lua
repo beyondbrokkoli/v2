@@ -120,6 +120,30 @@ while true do
     last_time = current_time
     ctx.accumulator = ctx.accumulator + frame_time
 
+    -- THE BUTTERFLY EFFECT (CHAOS INJECTION)
+    if ctx.net_identity == 1 and ctx.sim_tick_count == 180 and not ctx.corrupted then
+        -- Node 1 flips a single tile to an impossible value
+        ctx.rts_grid.terrain[0][0] = 999
+        ctx.corrupted = true
+        print("\n[CHAOS INJECTION] Node 1 deliberately corrupted its local memory!\n")
+    end
+
+    -- Execute strict phase isolation
+    FSM.tick_playing_state(ctx, FIXED_DT, bytes_terrain, bytes_elevation)
+
+    -- Status Heartbeat Upgrade
+    if current_time >= next_debug_print then
+        local display_idx = bit.band(math.max(1, ctx.sim_tick_count - 1), 127)
+        local current_hash = ctx.rollback_arena.frames[display_idx].state_checksum
+
+        print(string.format("[HEARTBEAT] SimTick: %d | Confirmed: %d | Hash: 0x%08X",
+            ctx.sim_tick_count,
+            ctx.rollback_arena.confirmed_tick,
+            current_hash
+        ))
+        next_debug_print = current_time + 1.0
+    end
+
     -- Execute strict phase isolation
     FSM.tick_playing_state(ctx, FIXED_DT, bytes_terrain, bytes_elevation)
 

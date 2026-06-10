@@ -98,6 +98,28 @@ function FSM.tick_playing_state(ctx, FIXED_DT, bytes_terrain, bytes_elevation)
             ctx.sim_tick_count = ctx.sim_tick_count + 1
 
             -- Divergence / Desync Verification occurs here
+            ctx.sim_tick_count = ctx.sim_tick_count + 1
+
+            -- DESYNC VERIFICATION SWEEP
+            local scan_start = math.max(1, ctx.rollback_arena.confirmed_tick - 60)
+            for t = scan_start, ctx.rollback_arena.confirmed_tick do
+                local conf_idx = bit.band(t, 127)
+                local locked_frame = ctx.rollback_arena.frames[conf_idx]
+
+                if locked_frame.remote_checksum ~= 0 and locked_frame.state_checksum ~= 0 then
+                    if locked_frame.remote_checksum ~= locked_frame.state_checksum then
+                        print(string.format("\n[FATAL DESYNC] TRUE Timeline Divergence Detected!"))
+                        print(string.format("Consensus Tick: %d | Peer: P%d", t, locked_frame.remote_peer_id))
+                        print(string.format("Local Hash:  0x%08X", locked_frame.state_checksum))
+                        print(string.format("Remote Hash: 0x%08X\n", locked_frame.remote_checksum))
+
+                        -- Immediately halt execution so the memory dump remains intact
+                        os.exit(1)
+                    end
+                    -- Clear it so we don't redundantly check it next frame
+                    locked_frame.remote_checksum = 0
+                end
+            end
         end
 
         ctx.accumulator = ctx.accumulator - FIXED_DT
