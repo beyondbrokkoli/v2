@@ -1,0 +1,49 @@
+### ENGINE AUDIT REPORT: WEAVER V2 MEMORY PIPELINE
+
+As requested, I have executed a strict static trace of the memory execution pipeline at Tick 129. I am ignoring network logic and focusing exclusively on the FFI boundary, pointer arithmetic, and memory initialization states. 
+
+Here are the critical memory-level vulnerabilities and architectural realities uncovered during the trace.
+
+---
+
+### 1. The FFI Boundary: Trace of Click `450`
+**Trace Path:** `LockstepPacket.clicks` (C) $\rightarrow$ `net_pump.lua` $\rightarrow$ `NetworkFrame.click_grid_idx` (Lua FFI).
+
+*   **Integer Overflow:** **None.** The value `450` fits safely within the `int32_t` bounds.
+*   **Endianness Mismatch:** **None.** Both the C backend (`vx_net.c`) and LuaJIT frontend are operating on x86-64 (Little Endian). The raw bytes are interpreted identically on both sides.
+*   **Sign-Extension Bug (Latent Vulnerability):** For the specific value `450`, there is no sign-extension issue because it is positive. **However, your architecture contains a critical latent sign-extension trap.** 
+    *   In `main.lua`, you initialize frame 0 with `f0.click_grid_idx[p] = -1`. 
+    *   Because `click_grid_idx` is defined as `int32_t` in `NetworkFrame`, LuaJIT reads `-1` and sign-extends it to the Lua number `-1.0`. 
+    *   In `sim_world.lua`, your bounds check is `if click_idx ~= 65535 and click_idx < total_tiles then`. 
+    *   Because `-1.0 ~= 65535.0` is TRUE, and `-1.0 < 1024.0` is TRUE, **the negative value bypasses the bounds check entirely.** This directly triggers the Out-Of-Bounds (OOB) write detailed in Directive 2.
+*   **Unaligned Access Warning:** Your `LockstepPacket` uses `#pragma pack(push, 1)`. The `int32_t clicks[64]` array begins at byte offset `94` (which is not divisible by 4). On x86-64, LuaJIT FFI correctly generates unaligned load instructions, so it won't crash. However, if you ever port this engine to ARM, this unaligned access will cause an immediate `SIGBUS` fault.
+
+---
+
+### 2. The FFI Zero-Index Trap: `grid.terrain[p][click_idx]`
+**Trace Path:** `sim_world.lua` executing `grid.terrain[p][click_idx] = p + 10`.
+
+*   **Memory Layout & Stride Resolution:** For `click_idx = 450`, **LuaJIT correctly resolves the 2D array pointer offset.** There is **zero risk of stride misalignment** for this specific value. LuaJIT FFI understands the exact dimensions of `uint16_t[8][1024]`. It correctly calculates the stride as `1024 * sizeof(uint16_t) = 2048` bytes. The pointer arithmetic perfectly evaluates to `base_address + (p * 2048) + (450 * 2)`.
+*   **The Trap (Out-Of-Bounds Array Write):** The "Zero-Index Trap" is not a stride misalignment, but a failure of your bounds check to catch negative indices. Because of the `-1` initialization in frame 0 (mentioned above), when the engine simulates tick 0, it executes `grid.terrain[p][-1]`. 
+    *   In LuaJIT FFI, `ptr[-1]` does not wrap around; it accesses the memory immediately preceding the array. 
+    *   For `p=0`, this writes to the heap metadata or adjacent allocations (like the `elevation` array or LuaJIT's GC structures) located before the `terrain` allocation. 
+    *   **Verdict:** This is a severe **Out-Of-Bounds array write** that will eventually corrupt the heap and cause a non-deterministic crash or silent state corruption.
+
+---
+
+### 3. The Memory Hash: `net.HashState` and Padding
+**Trace Path:** `fsm_core.lua` passing `ctx.rts_grid.terrain` to `vx_net_hash_state`.
+
+*   **Hidden Padding Bytes:** **None.** The arrays `uint16_t[8][1024]` and `float[8][1024]` are contiguous arrays of primitive types. By definition in both C and LuaJIT FFI, there is **no internal padding** between elements of a primitive array.
+*   **Uninitialized Memory:** **None.** LuaJIT's `ffi.new` guarantees that all newly allocated primitive arrays and structs are **strictly zero-initialized**. The OS does not hand you garbage memory here; it is wiped clean by the LuaJIT allocator.
+*   **Verdict:** The FNV-1a hash pipeline is **mathematically safe** from uninitialized garbage memory. The hash will ingest exactly the bytes you expect, and the state checksums will remain perfectly deterministic across all nodes. (Note: Your `RollbackBuffer` struct *does* have auto-generated padding between `is_rollback_active` and `rollback_target`, but since you only hash the `terrain` and `elevation` primitive arrays, that struct padding is never ingested by the hash function).
+
+---
+
+### SUMMARY OF REQUIRED FIXES
+Your memory safety is 95% flawless, but you have one critical OOB write vector that will break determinism or crash the engine during a rollback to Tick 0:
+
+1.  **Fix the Empty Marker Type/Logic:** Change `click_grid_idx` in `NetworkFrame` to `uint32_t` (so `-1` becomes `4294967295`, which fails the `< 1024` check), OR change the initialization in `main.lua` to use `65535` instead of `-1` to match the rest of the engine.
+2.  **Fix the Bounds Check:** In `sim_world.lua`, explicitly guard against negative indices: `if click_idx >= 0 and click_idx ~= 65535 and click_idx < total_tiles then`.
+
+The rest of your FFI boundary, 2D array strides, and hash pipeline are executing exactly as designed.

@@ -3,7 +3,7 @@ local bit = require("bit")
 local cfg = require("config_engine")
 local net = require("network")
 
-local CHAOS_PACKET_LOSS = 0.1
+local CHAOS_PACKET_LOSS = 0.5
 
 local Pump = {}
 local peer_ack_of_me = ffi.new("uint32_t[8]")

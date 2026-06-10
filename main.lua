@@ -126,11 +126,13 @@ while true do
     if current_time >= next_debug_print then
         local display_idx = bit.band(ctx.sim_tick_count - 1, 127)
         local display_checksum = ctx.rollback_arena.frames[display_idx].state_checksum or 0
+        local missing_frames = ctx.sim_tick_count - ctx.rollback_arena.confirmed_tick
         
-        print(string.format("[HEARTBEAT] SimTick: %d | NetHead: %d | Confirmed: %d | StateHash: 0x%08X",
+        print(string.format("[HEARTBEAT] SimTick: %d | NetHead: %d | Confirmed: %d | Missing: %d | StateHash: 0x%08X",
             ctx.sim_tick_count,
             ctx.rollback_arena.head_tick,
             ctx.rollback_arena.confirmed_tick,
+            missing_frames,
             display_checksum
         ))
         next_debug_print = current_time + 1.0
