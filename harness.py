@@ -22,9 +22,7 @@ def monitor_output(process, p_id):
                     sync_log.flush()
 
 def main():
-    print("===========================================")
     print(" IGNITING V2 LOCAL MULTIVERSE (8 NODES)")
-    print("===========================================")
 
     nodes = []
 
@@ -48,19 +46,14 @@ def main():
         threading.Thread(target=monitor_output, args=(proc, i), daemon=True).start()
         time.sleep(0.1) # Tiny delay just to ensure sequential stdout logging
 
-    print("\n===========================================")
     print(" [HARNESS] 8-WAY MESH ALLOCATED AND POLLING")
-    print("===========================================")
     print("1. All nodes cross-connected on 127.0.0.1:50000-50007")
-    print("2. Deep History Packets actively circulating.")
-    print("3. Press Ctrl+C to nuke the Multiverse.")
-    print("===========================================\n")
 
     try:
         for node in nodes:
             node.wait()
     except KeyboardInterrupt:
-        print("\n[HARNESS] Ctrl+C Detected. Nuking the Multiverse...")
+        print("\n[HARNESS] Ctrl+C Detected.")
         for node in nodes:
             node.terminate()
         sync_log.close()
