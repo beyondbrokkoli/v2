@@ -1,10 +1,9 @@
--- main.lua
 io.stdout:setvbuf("no")
 package.path = "./lua/?.lua;" .. package.path
 
 local ffi = require("ffi")
 local bit = require("bit")
-local structs = require("structs") -- Forces SSoT compilation
+local structs = require("structs")
 local net = require("network")
 local cfg = require("config_engine")
 local FSM = require("fsm_core")
@@ -45,7 +44,9 @@ else
     end
 end
 
+-- ==========================================
 -- WEAVER V2 LOCAL MULTIVERSE BOOT SEQUENCE
+-- ==========================================
 print("========================================")
 print(" WEAVER ENGINE: 8-NODE DEEP HISTORY ")
 print("========================================")
@@ -62,7 +63,6 @@ net.SetSession(0xDEADBEEF)
 
 print(string.format("[SYSTEM] Node %d bound to :%d. Meshing topology...", local_id, local_port))
 
--- Auto-mesh with the other 7 local instances
 for p = 0, 7 do
     if p ~= local_id then
         net.Connect(p, "127.0.0.1", 50000 + p)
@@ -81,10 +81,10 @@ local ctx = {
     pending_click = -1,
     total_tiles = total_tiles,
     last_bot_tick = 0,
-
+    
     peer_active = ffi.new("bool[8]"),
     peer_highest_tick = ffi.new("uint32_t[8]"),
-
+    
     rts_grid = State.init_grid(total_tiles),
     rollback_arena = ffi.new("RollbackBuffer"),
     snapshot_ring = {
@@ -99,10 +99,9 @@ for p = 0, 7 do f0.click_grid_idx[p] = -1 f0.player_input[p] = 0 end
 ctx.rollback_arena.head_tick = 0
 ctx.rollback_arena.confirmed_tick = 0
 
--- Tell the FSM that all 7 peers exist so it demands ACKs from them
 for p = 0, 7 do
     if p ~= local_id then
-        ctx.peer_active[p] = true
+        ctx.peer_active[p] = true 
     end
 end
 
@@ -120,7 +119,7 @@ while true do
     last_time = current_time
     ctx.accumulator = ctx.accumulator + frame_time
 
-    -- Execute strict phase isolation
+    -- Execute strict phase isolation (ONCE PER FRAME)
     FSM.tick_playing_state(ctx, FIXED_DT, bytes_terrain, bytes_elevation)
 
     -- Status Heartbeat Upgrade
@@ -136,19 +135,5 @@ while true do
         next_debug_print = current_time + 1.0
     end
 
-    -- Execute strict phase isolation
-    FSM.tick_playing_state(ctx, FIXED_DT, bytes_terrain, bytes_elevation)
-
-    -- Status Heartbeat
-    if current_time >= next_debug_print then
-        print(string.format("[HEARTBEAT] SimTick: %d | NetHead: %d | Confirmed: %d | Missing: %d frames",
-            ctx.sim_tick_count,
-            ctx.rollback_arena.head_tick,
-            ctx.rollback_arena.confirmed_tick,
-            ctx.sim_tick_count - ctx.rollback_arena.confirmed_tick
-        ))
-        next_debug_print = current_time + 1.0
-    end
-
-    sys_sleep(1) -- Yield to OS
+    sys_sleep(1)
 end
