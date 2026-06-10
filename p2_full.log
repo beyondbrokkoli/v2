@@ -4,9 +4,6 @@
 Enter Node ID (0-7): 
 > [SYSTEM] Node 2 bound to :50002. Meshing topology...
 [SYSTEM] Topology Locked. Entering FSM loop.
-luajit: ./lua/sim_world.lua:16: attempt to compare number with nil
-stack traceback:
-	./lua/sim_world.lua:16: in function 'update_simulation'
-	./lua/fsm_core.lua:73: in function 'tick_playing_state'
-	main.lua:124: in main chunk
-	[C]: at 0x564294d3be00
+[HEARTBEAT] SimTick: 32 | NetHead: 31 | Confirmed: 28 | StateHash: 0x02544DF4
+[HEARTBEAT] SimTick: 91 | NetHead: 90 | Confirmed: 88 | StateHash: 0x6D2BC99C
+[HEARTBEAT] SimTick: 135 | NetHead: 135 | Confirmed: 130 | StateHash: 0xDDFB0261

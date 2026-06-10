@@ -92,10 +92,16 @@ function Pump.intercept_network(ctx, current_tick)
                     local inc_click = pkt.clicks[h]
                     
                     if h_frame.player_input[pid] ~= inc_input or h_frame.click_grid_idx[pid] ~= inc_click then
-                        if ctx.rollback_arena.is_rollback_active == 0 or h_tick < ctx.rollback_arena.rollback_target then
-                            ctx.rollback_arena.is_rollback_active = 1
-                            ctx.rollback_arena.rollback_target = h_tick
+                        
+                        -- [FIX]: Only rewind the timeline if the divergence occurred in the PAST.
+                        -- Future/current frames haven't been simulated yet, so we just securely bank the input.
+                        if h_tick < current_tick then
+                            if ctx.rollback_arena.is_rollback_active == 0 or h_tick < ctx.rollback_arena.rollback_target then
+                                ctx.rollback_arena.is_rollback_active = 1
+                                ctx.rollback_arena.rollback_target = h_tick
+                            end
                         end
+                        
                         h_frame.player_input[pid] = inc_input
                         h_frame.click_grid_idx[pid] = inc_click
                     end
