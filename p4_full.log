@@ -4,19 +4,5 @@
 Enter Node ID (0-7): 
 > [SYSTEM] Node 4 bound to :50004. Meshing topology...
 [SYSTEM] Topology Locked. Entering FSM loop.
-[HEARTBEAT] SimTick: 43 | NetHead: 42 | Confirmed: 41 | StateHash: 0x1C4B2E49
-[HEARTBEAT] SimTick: 103 | NetHead: 102 | Confirmed: 101 | StateHash: 0x206F5F2C
-[HEARTBEAT] SimTick: 163 | NetHead: 162 | Confirmed: 161 | StateHash: 0x6C14FDD1
-[HEARTBEAT] SimTick: 223 | NetHead: 222 | Confirmed: 219 | StateHash: 0x3783F7BC
-[HEARTBEAT] SimTick: 282 | NetHead: 281 | Confirmed: 280 | StateHash: 0xB82B7751
-[HEARTBEAT] SimTick: 342 | NetHead: 341 | Confirmed: 340 | StateHash: 0x692A1E2C
-[HEARTBEAT] SimTick: 402 | NetHead: 401 | Confirmed: 398 | StateHash: 0xA8E2DC29
-[HEARTBEAT] SimTick: 460 | NetHead: 459 | Confirmed: 458 | StateHash: 0xA27B9D84
-[HEARTBEAT] SimTick: 518 | NetHead: 517 | Confirmed: 516 | StateHash: 0x976AF68C
-[HEARTBEAT] SimTick: 578 | NetHead: 577 | Confirmed: 576 | StateHash: 0xBC5124DC
-luajit: ./lua/net_pump.lua:131: interrupted!
-stack traceback:
-	./lua/net_pump.lua:131: in function 'intercept_network'
-	./lua/fsm_core.lua:48: in function 'tick_playing_state'
-	main.lua:124: in main chunk
-	[C]: at 0x56031f9bae00
+[HEARTBEAT] SimTick: 42 | NetHead: 41 | Confirmed: 39 | StateHash: 0xBF285C59
+[HEARTBEAT] SimTick: 102 | NetHead: 101 | Confirmed: 99 | StateHash: 0xCCC152F4

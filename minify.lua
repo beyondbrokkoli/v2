@@ -85,7 +85,7 @@ local order = {
 --    "proxy.lua",
     -- [ C-CORE ]
 --    "c/main.c",
---    "c/vx_net.c",
+    "c/vx_net.c",
 --    "c/shared_structs.h",
 
     -- [ LUA ENGINE MODULES ]
@@ -104,7 +104,7 @@ local order = {
 --    "lua/network.lua",
     "lua/sim_world.lua",
     "lua/structs.lua",
---    "lua/config_engine.lua",
+    "lua/config_engine.lua",
     "lua/registry_export.lua",
     "lua/network.lua",
 --    "lua/camera.lua",

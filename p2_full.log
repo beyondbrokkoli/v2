@@ -4,19 +4,11 @@
 Enter Node ID (0-7): 
 > [SYSTEM] Node 2 bound to :50002. Meshing topology...
 [SYSTEM] Topology Locked. Entering FSM loop.
-[HEARTBEAT] SimTick: 31 | NetHead: 30 | Confirmed: 28 | StateHash: 0x042ACF44
-[HEARTBEAT] SimTick: 91 | NetHead: 90 | Confirmed: 89 | StateHash: 0x206F5F2C
-[HEARTBEAT] SimTick: 151 | NetHead: 150 | Confirmed: 148 | StateHash: 0x9C01011A
-[HEARTBEAT] SimTick: 211 | NetHead: 210 | Confirmed: 208 | StateHash: 0x3783F7BC
-[HEARTBEAT] SimTick: 270 | NetHead: 269 | Confirmed: 268 | StateHash: 0x063DDAFA
-[HEARTBEAT] SimTick: 330 | NetHead: 329 | Confirmed: 328 | StateHash: 0x692A1E2C
-[HEARTBEAT] SimTick: 390 | NetHead: 389 | Confirmed: 388 | StateHash: 0x264C6D72
-[HEARTBEAT] SimTick: 448 | NetHead: 447 | Confirmed: 446 | StateHash: 0xA27B9D84
-[HEARTBEAT] SimTick: 507 | NetHead: 506 | Confirmed: 503 | StateHash: 0x232449E2
-[HEARTBEAT] SimTick: 567 | NetHead: 566 | Confirmed: 564 | StateHash: 0xBC5124DC
-[HEARTBEAT] SimTick: 626 | NetHead: 625 | Confirmed: 623 | StateHash: 0xFB892C8A
-luajit: ./lua/fsm_core.lua:100: interrupted!
+[HEARTBEAT] SimTick: 31 | NetHead: 30 | Confirmed: 27 | StateHash: 0x1A0EA22A
+[HEARTBEAT] SimTick: 91 | NetHead: 90 | Confirmed: 87 | StateHash: 0xCCC152F4
+luajit: ./lua/net_pump.lua:64: interrupted!
 stack traceback:
-	./lua/fsm_core.lua:100: in function 'tick_playing_state'
+	./lua/net_pump.lua:64: in function 'intercept_network'
+	./lua/fsm_core.lua:48: in function 'tick_playing_state'
 	main.lua:124: in main chunk
-	[C]: at 0x55adc045de00
+	[C]: at 0x55fd8fb51e00
