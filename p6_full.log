@@ -4,5 +4,23 @@
 Enter Node ID (0-7): 
 > [SYSTEM] Node 6 bound to :50006. Meshing topology...
 [SYSTEM] Topology Locked. Entering FSM loop.
-[HEARTBEAT] SimTick: 57 | NetHead: 56 | Confirmed: 54 | StateHash: 0xA0D2EBD9
-[HEARTBEAT] SimTick: 117 | NetHead: 116 | Confirmed: 113 | StateHash: 0xCCC152F4
+[HEARTBEAT] SimTick: 56 | NetHead: 55 | Confirmed: 53 | StateHash: 0xBFADFB11
+[HEARTBEAT] SimTick: 115 | NetHead: 114 | Confirmed: 112 | StateHash: 0xE8F5433C
+[HEARTBEAT] SimTick: 174 | NetHead: 173 | Confirmed: 172 | StateHash: 0x9D3DB6B9
+[HEARTBEAT] SimTick: 234 | NetHead: 233 | Confirmed: 232 | StateHash: 0xF6AD70AC
+[HEARTBEAT] SimTick: 293 | NetHead: 292 | Confirmed: 290 | StateHash: 0xD657D1D9
+[HEARTBEAT] SimTick: 352 | NetHead: 351 | Confirmed: 348 | StateHash: 0xC768E654
+[HEARTBEAT] SimTick: 412 | NetHead: 411 | Confirmed: 409 | StateHash: 0xC507A899
+[HEARTBEAT] SimTick: 471 | NetHead: 470 | Confirmed: 469 | StateHash: 0xD027D1F4
+[HEARTBEAT] SimTick: 531 | NetHead: 530 | Confirmed: 529 | StateHash: 0x4B514A41
+[HEARTBEAT] SimTick: 591 | NetHead: 590 | Confirmed: 588 | StateHash: 0x1EAFEE8C
+[HEARTBEAT] SimTick: 650 | NetHead: 649 | Confirmed: 647 | StateHash: 0x851D8A19
+[HEARTBEAT] SimTick: 709 | NetHead: 708 | Confirmed: 707 | StateHash: 0x03581124
+[HEARTBEAT] SimTick: 769 | NetHead: 768 | Confirmed: 766 | StateHash: 0x14235979
+[HEARTBEAT] SimTick: 829 | NetHead: 828 | Confirmed: 827 | StateHash: 0xD6FE089C
+[HEARTBEAT] SimTick: 888 | NetHead: 887 | Confirmed: 885 | StateHash: 0x90C8D9D9
+luajit: ./lua/fsm_core.lua:22: interrupted!
+stack traceback:
+	./lua/fsm_core.lua:22: in function 'tick_playing_state'
+	main.lua:124: in main chunk
+	[C]: at 0x55974867ae00

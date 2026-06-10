@@ -90,7 +90,7 @@ local ctx = {
 local f0 = ctx.rollback_arena.frames[0]
 f0.tick = 0
 for p = 0, 7 do
-    f0.click_grid_idx[p] = -1
+    f0.click_grid_idx[p] = 65535
     f0.player_input[p] = 0
 end
 ctx.rollback_arena.head_tick = 0
