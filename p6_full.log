@@ -4,13 +4,6 @@
 Enter Node ID (0-7): 
 > [SYSTEM] Node 6 bound to :50006. Meshing topology...
 [SYSTEM] Topology Locked. Entering FSM loop.
-[HEARTBEAT] SimTick: 26 | Confirmed: 21 | Hash: 0xC4A3389A
-[HEARTBEAT] SimTick: 26 | Confirmed: 21 | Hash: 0xC4A3389A
-[HEARTBEAT] SimTick: 26 | Confirmed: 21 | Hash: 0xC4A3389A
-[HEARTBEAT] SimTick: 26 | Confirmed: 21 | Hash: 0xC4A3389A
-[HEARTBEAT] SimTick: 26 | Confirmed: 21 | Hash: 0xC4A3389A
-[HEARTBEAT] SimTick: 26 | Confirmed: 21 | Hash: 0xC4A3389A
-luajit: main.lua:128: interrupted!
-stack traceback:
-	main.lua:128: in main chunk
-	[C]: at 0x55f068da6e00
+[HEARTBEAT] SimTick: 25 | NetHead: 25 | Confirmed: 20 | StateHash: 0x128B5292
+[HEARTBEAT] SimTick: 25 | NetHead: 25 | Confirmed: 20 | StateHash: 0x128B5292
+[HEARTBEAT] SimTick: 25 | NetHead: 25 | Confirmed: 20 | StateHash: 0x128B5292

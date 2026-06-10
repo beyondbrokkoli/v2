@@ -4,9 +4,6 @@
 Enter Node ID (0-7): 
 > [SYSTEM] Node 1 bound to :50001. Meshing topology...
 [SYSTEM] Topology Locked. Entering FSM loop.
-
-[FATAL DESYNC] TRUE Timeline Divergence Detected!
-Consensus Tick: 19 | Peer: P7
-Local Hash:  0xDC03FA59
-Remote Hash: 0xA7039DC5
-
+[HEARTBEAT] SimTick: 25 | NetHead: 25 | Confirmed: 20 | StateHash: 0x128B5292
+[HEARTBEAT] SimTick: 25 | NetHead: 25 | Confirmed: 20 | StateHash: 0x128B5292
+[HEARTBEAT] SimTick: 25 | NetHead: 25 | Confirmed: 20 | StateHash: 0x128B5292
