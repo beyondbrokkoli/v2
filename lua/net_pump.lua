@@ -3,7 +3,7 @@ local bit = require("bit")
 local cfg = require("config_engine")
 local net = require("network")
 
-local CHAOS_PACKET_LOSS = 0.01
+local CHAOS_PACKET_LOSS = 0.15
 
 local Pump = {}
 local peer_ack_of_me = ffi.new("uint32_t[8]")
@@ -86,6 +86,9 @@ function Pump.intercept_network(ctx, current_tick)
                             h_frame.click_grid_idx[p_scan] = 65535
                         end
                         h_frame.state_checksum = 0
+                        
+                        -- [FIX]: Purge the Ghost Checksum from the previous ring buffer lap
+                        h_frame.remote_checksum = 0
                     end
                     
                     local inc_input = pkt.inputs[h]
