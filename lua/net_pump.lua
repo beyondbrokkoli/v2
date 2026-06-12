@@ -3,7 +3,7 @@ local bit = require("bit")
 local cfg = require("config_engine")
 local net = require("network")
 
-local CHAOS_PACKET_LOSS = 0.0
+local CHAOS_PACKET_LOSS = 0.98
 
 local Pump = {}
 local peer_ack_of_me = ffi.new("uint32_t[8]")
@@ -61,7 +61,7 @@ function Pump.intercept_network(ctx, current_tick)
         local pkt = in_buffer[i]
         local pid = pkt.player_id
 
-        -- if math.random() < CHAOS_PACKET_LOSS then goto continue_inbox end
+        if math.random() < CHAOS_PACKET_LOSS then goto continue_inbox end
 
         if pid < 8 and pkt.frame_tick >= 0 then
             ctx.peer_active[pid] = true

@@ -85,13 +85,15 @@ local order = {
     "lua/sim_world.lua",
     "lua/registry_export.lua",
     "build.lua",
---    "proxy.lua",
-    -- [ C-CORE ]
+    "c/shared_structs.h",
+--    "c/vx_net.c",
+--    "lua/network.lua",
+--    "lua/net_pump.lua",
+--    "lua/fsm_core.lua",
+--    "main.lua",
+--     [ C-CORE ]
 --    "c/main.c",
-    "c/vx_net.c",
---    "c/shared_structs.h",
-
-    -- [ LUA ENGINE MODULES ]
+--     [ LUA ENGINE MODULES ]
 --    "lua/registry_vk.lua",
 --    "lua/pipeline_manifest.lua",
 --    "lua/vulkan_core.lua",
@@ -100,12 +102,9 @@ local order = {
 --    "lua/graphics_pipeline.lua",
 --    "lua/compute_pipeline.lua",
 --    "lua/renderer.lua",
+--    "lua/render_queue.lua",
 --    "lua/memory.lua",
 --    "lua/vmath.lua",
-    "lua/network.lua",
-    "lua/net_pump.lua",
-    "lua/fsm_core.lua",
-    "main.lua",
 --    "lua/camera.lua",
 --    "lua/json_util.lua",
 
