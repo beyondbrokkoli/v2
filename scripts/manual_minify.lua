@@ -90,7 +90,7 @@ local order = {
 --    "build.lua",
     -- [ C-CORE ]
 --    "c/vx_net.c",
-    "c/shared_structs.h",
+--    "c/shared_structs.h",
     "c/main.c",
     -- [ LUA ENGINE MODULES ]
 --    "lua/registry_vk.lua",

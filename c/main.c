@@ -49,15 +49,13 @@ static void vmath_thread_join(vmath_thread_t thread) {
 #define CMD_IDLE 0
 #define CMD_BOOT_WINDOW 1
 #define CMD_KILL_WINDOW 2
-
-static bool s_is_fullscreen = false;
-static int s_win_x = 0, s_win_y = 0;
-static int s_win_w = 1280, s_win_h = 720;
-
 #define MAX_WINDOWS 4
 
+static bool s_is_fullscreen[MAX_WINDOWS] = {false};
+static int s_win_x[MAX_WINDOWS] = {0}, s_win_y[MAX_WINDOWS] = {0};
+static int s_win_w[MAX_WINDOWS] = {1280}, s_win_h[MAX_WINDOWS] = {720};
+
 typedef struct {
-    // --- GLOBAL ENGINE STATE (Singletons) ---
     alignas(64) _Atomic int ready_index;
     _Atomic int is_running;
     _Atomic int lua_finished;
@@ -79,6 +77,13 @@ typedef struct {
     _Atomic int window_resized[MAX_WINDOWS];
     _Atomic int win_w[MAX_WINDOWS];
     _Atomic int win_h[MAX_WINDOWS];
+
+    // --- PATCH: MISSING INPUT ARRAYS ---
+    _Atomic float click_x[MAX_WINDOWS];
+    _Atomic float click_y[MAX_WINDOWS];
+    _Atomic int mouse_left[MAX_WINDOWS];
+    _Atomic int mouse_right[MAX_WINDOWS];
+    _Atomic int key_space[MAX_WINDOWS];
 } IPC_Mailbox;
 
 typedef struct {
@@ -93,28 +98,36 @@ EXPORT int vx_core_is_running() { return atomic_load_explicit(&g_engine.mailbox.
 EXPORT void vx_core_shutdown() { atomic_store_explicit(&g_engine.mailbox.is_running, 0, memory_order_release); }
 EXPORT void vx_core_mark_finished() { atomic_store_explicit(&g_engine.mailbox.lua_finished, 1, memory_order_release); }
 EXPORT const char** vx_sys_glfw_extensions(uint32_t* count) { return glfwGetRequiredInstanceExtensions(count); }
-EXPORT void vx_sys_publish_instance(void* instance) { atomic_store_explicit(&g_engine.mailbox.vk_instance, instance, memory_order_release); }
-EXPORT void* vx_sys_get_surface() { return atomic_load_explicit(&g_engine.mailbox.vk_surface, memory_order_acquire); }
-
-EXPORT void vx_sys_set_cmd(int cmd, int w, int h) {
-    atomic_store_explicit(&g_engine.mailbox.glfw_arg_w, w, memory_order_relaxed);
-    atomic_store_explicit(&g_engine.mailbox.glfw_arg_h, h, memory_order_relaxed);
-    atomic_store_explicit(&g_engine.mailbox.glfw_cmd, cmd, memory_order_release);
+EXPORT void vx_sys_publish_instance(int win_id, void* instance) {
+    if (win_id < 0 || win_id >= MAX_WINDOWS) return;
+    atomic_store_explicit(&g_engine.mailbox.vk_instance[win_id], instance, memory_order_release);
 }
 
-EXPORT int vx_input_last_key() {
-    return atomic_exchange_explicit(&g_engine.mailbox.last_key_pressed, 0, memory_order_acquire);
+EXPORT void* vx_sys_get_surface(int win_id) {
+    if (win_id < 0 || win_id >= MAX_WINDOWS) return NULL;
+    return atomic_load_explicit(&g_engine.mailbox.vk_surface[win_id], memory_order_acquire);
+}
+
+EXPORT void vx_sys_set_cmd(int win_id, int cmd, int w, int h) {
+    if (win_id < 0 || win_id >= MAX_WINDOWS) return;
+    atomic_store_explicit(&g_engine.mailbox.glfw_arg_w[win_id], w, memory_order_relaxed);
+    atomic_store_explicit(&g_engine.mailbox.glfw_arg_h[win_id], h, memory_order_relaxed);
+    atomic_store_explicit(&g_engine.mailbox.glfw_cmd[win_id], cmd, memory_order_release);
+}
+
+EXPORT int vx_input_last_key(int win_id) {
+    if (win_id < 0 || win_id >= MAX_WINDOWS) return 0;
+    return atomic_exchange_explicit(&g_engine.mailbox.last_key_pressed[win_id], 0, memory_order_acquire);
 }
 
 EXPORT int vx_input_get_active_window() {
     return atomic_load_explicit(&g_engine.mailbox.active_window, memory_order_acquire);
 }
 
-static atomic_flag s_mouse_lock = ATOMIC_FLAG_INIT;
-
 double last_mx[MAX_WINDOWS] = {0.0};
 double last_my[MAX_WINDOWS] = {0.0};
 bool first_mouse[MAX_WINDOWS] = {true, true, true, true};
+static atomic_flag s_mouse_lock = ATOMIC_FLAG_INIT;
 
 void glfw_cursor_callback(GLFWwindow* window, double xpos, double ypos) {
     int id = (int)(intptr_t)glfwGetWindowUserPointer(window);
@@ -399,32 +412,16 @@ static RenderRing g_ring = { .ready_idx = -1, .locked_mask = 0 };
 
 #define MAX_WINDOWS 4
 
-// The Multi-Tenant WSI Registry
 static RenderThreadInit g_window_wsi[MAX_WINDOWS];
-
-// The Double-Gate Locks (Scaled to arrays)
-static atomic_int g_wsi_state[MAX_WINDOWS] = {0, 0, 0, 0};   // 0 = Dead/Updating, 1 = Ready to Render
-static atomic_int g_render_busy[MAX_WINDOWS] = {0, 0, 0, 0}; // 1 = Render Thread is inside a Vulkan execution block
+static atomic_int g_wsi_state[MAX_WINDOWS] = {0, 0, 0, 0};
+static atomic_int g_render_busy[MAX_WINDOWS] = {0, 0, 0, 0};
 
 EXPORT void vx_stream_register_window(int win_id, RenderThreadInit* wsi) {
     if (win_id < 0 || win_id >= MAX_WINDOWS) return;
-
-    // 1. Lock the specific WSI slot
     atomic_store_explicit(&g_wsi_state[win_id], 0, memory_order_release);
-
-    // 2. Wait for the Render Thread to exit this specific window's Vulkan block
-    while (atomic_load_explicit(&g_render_busy[win_id], memory_order_acquire)) {
-        SLEEP_MS(1);
-    }
-
-    // 3. Safe to overwrite
+    while (atomic_load_explicit(&g_render_busy[win_id], memory_order_acquire)) { SLEEP_MS(1); }
     g_window_wsi[win_id] = *wsi;
-
-    // 4. Open the gate
     atomic_store_explicit(&g_wsi_state[win_id], 1, memory_order_release);
-
-    // Note: IPC Ring Buffer resetting is now handled per-tenant inside the Render Thread,
-    // or you can safely flush the locked_mask here if resetting the whole simulation.
 }
 
 static vmath_thread_t g_render_thread;
@@ -563,24 +560,17 @@ THREAD_FUNC transfer_thread_loop(void* arg) {
     return NULL;
 }
 
-EXPORT void vx_stream_init(RenderThreadInit* wsi) {
-    // 1. Stop the Render Thread from starting a new frame
-    atomic_store_explicit(&g_wsi_state, 0, memory_order_release);
-
-    // 2. Wait for the Render Thread to clear any active Vulkan block
-    while (atomic_load_explicit(&g_render_busy, memory_order_acquire)) {
-        SLEEP_MS(1);
+EXPORT void vx_stream_init(int win_id, RenderThreadInit* wsi) {
+    if (win_id < 0 || win_id >= MAX_WINDOWS) return;
+    atomic_store_explicit(&g_wsi_state[win_id], 0, memory_order_release);
+    while (atomic_load_explicit(&g_render_busy[win_id], memory_order_acquire)) { SLEEP_MS(1); }
+    g_window_wsi[win_id] = *wsi;
+    if (win_id == 0) {
+        atomic_store_explicit(&g_ring.ready_idx, -1, memory_order_release);
+        atomic_store_explicit(&g_ring.locked_mask, 0, memory_order_release);
     }
-
-    // 3. Safe to perform the non-atomic struct copy
-    g_wsi = *wsi;
-
-    // 4. Restart the Render Thread and reset the IPC ring
-    atomic_store_explicit(&g_ring.ready_idx, -1, memory_order_release);
-    atomic_store_explicit(&g_ring.locked_mask, 0, memory_order_release);
-    atomic_store_explicit(&g_wsi_state, 1, memory_order_release);
+    atomic_store_explicit(&g_wsi_state[win_id], 1, memory_order_release);
 }
-
 EXPORT RenderPacket* vx_stream_packet(int idx) {
     return &g_ring.packets[idx];
 }
@@ -608,7 +598,7 @@ EXPORT void vx_stream_commit(int idx) {
     STORE(g_ring.ready_idx, idx);
 }
 
-EXPORT void vx_record_commands(VkCommandBuffer cmd, RenderPacket* p, DrawCommand* queue, uint32_t count, PFN_vkCmdBeginRenderingKHR pfnBegin, PFN_vkCmdEndRenderingKHR pfnEnd) {
+EXPORT void vx_record_commands(VkCommandBuffer cmd, RenderPacket* p, DrawCommand* queue, uint32_t count, RenderThreadInit* win_wsi) {
     VkCommandBufferBeginInfo beginInfo = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     vkBeginCommandBuffer(cmd, &beginInfo);
 
@@ -654,7 +644,7 @@ EXPORT void vx_record_commands(VkCommandBuffer cmd, RenderPacket* p, DrawCommand
         .clearValue.depthStencil = {1.0f, 0}
     };
 
-    VkRenderingInfoKHR renderInfo = {
+   VkRenderingInfoKHR renderInfo = {
         .sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR,
         .renderArea.extent = {p->width, p->height},
         .layerCount = 1,
@@ -662,7 +652,8 @@ EXPORT void vx_record_commands(VkCommandBuffer cmd, RenderPacket* p, DrawCommand
         .pColorAttachments = &colorAttachment,
         .pDepthAttachment = &depthAttachment
     };
-    pfnBegin(cmd, &renderInfo);
+
+    win_wsi->pfnBegin(cmd, &renderInfo);
 
     // 3. Global Graphics State Setup
     VkViewport viewport = {0.0f, 0.0f, (float)p->width, (float)p->height, 0.0f, 1.0f};
@@ -731,7 +722,7 @@ EXPORT void vx_record_commands(VkCommandBuffer cmd, RenderPacket* p, DrawCommand
         );
     }
 
-    pfnEnd(cmd);
+    win_wsi->pfnEnd(cmd);
 
     // 5. Present Barrier
     VkImageMemoryBarrier presentBarrier = {
@@ -904,27 +895,25 @@ EXPORT void vx_thread_start() {
 }
 
 EXPORT void vx_thread_kill() {
-    // 1. Signal threads to stop
     atomic_store_explicit(&g_render_thread_active, 0, memory_order_release);
     atomic_store_explicit(&g_transfer_thread_active, 0, memory_order_release);
-
-    // 2. Wait for them to physically exit
     vmath_thread_join(g_render_thread);
     vmath_thread_join(g_transfer_thread);
 
-    // 3. NOW it is 100% safe to lock the device
-    vkDeviceWaitIdle(g_wsi.device);
+    for (int i = 0; i < MAX_WINDOWS; i++) {
+        if (g_window_wsi[i].device) {
+            vkDeviceWaitIdle(g_window_wsi[i].device);
+        }
+    }
 
-    // 4. Sweep memory
     if (g_render_cmd_pool) {
-        vkDestroyCommandPool(g_wsi.device, g_render_cmd_pool, NULL);
+        vkDestroyCommandPool(g_window_wsi[0].device, g_render_cmd_pool, NULL);
         g_render_cmd_pool = VK_NULL_HANDLE;
     }
     if (g_transfer_cmd_pool) {
-        vkDestroyCommandPool(g_wsi.device, g_transfer_cmd_pool, NULL);
+        vkDestroyCommandPool(g_window_wsi[0].device, g_transfer_cmd_pool, NULL);
         g_transfer_cmd_pool = VK_NULL_HANDLE;
     }
-
     printf("[C-CORE] Async Threads joined, Device idled, and Pools destroyed.\n");
 }
 
@@ -933,13 +922,29 @@ void vx_init_mailbox() {
     atomic_init(&g_engine.mailbox.is_running, 1);
     atomic_init(&g_engine.mailbox.lua_finished, 0);
     atomic_init(&g_engine.mailbox.active_window, 0);
-    atomic_init(&g_engine.mailbox.vk_instance, NULL);
-    atomic_init(&g_engine.mailbox.vk_surface, NULL);
-    atomic_init(&g_engine.mailbox.mouse_x, 0.0f);
-    atomic_init(&g_engine.mailbox.mouse_y, 0.0f);
-    atomic_init(&g_engine.mailbox.click_x, -1.0f); // Initialize to -1
-    atomic_init(&g_engine.mailbox.click_y, -1.0f); // Initialize to -1
-    atomic_init(&g_engine.mailbox.mouse_captured, 0); // Start Free
+
+    for (int i = 0; i < MAX_WINDOWS; i++) {
+        atomic_init(&g_engine.mailbox.vk_instance[i], NULL);
+        atomic_init(&g_engine.mailbox.vk_surface[i], NULL);
+        atomic_init(&g_engine.mailbox.glfw_cmd[i], CMD_IDLE);
+        atomic_init(&g_engine.mailbox.glfw_arg_w[i], 0);
+        atomic_init(&g_engine.mailbox.glfw_arg_h[i], 0);
+        atomic_init(&g_engine.mailbox.last_key_pressed[i], 0);
+        atomic_init(&g_engine.mailbox.wasd_mask[i], 0);
+        atomic_init(&g_engine.mailbox.mouse_dx[i], 0.0f);
+        atomic_init(&g_engine.mailbox.mouse_dy[i], 0.0f);
+        atomic_init(&g_engine.mailbox.mouse_x[i], 0.0f);
+        atomic_init(&g_engine.mailbox.mouse_y[i], 0.0f);
+        atomic_init(&g_engine.mailbox.click_x[i], -1.0f);
+        atomic_init(&g_engine.mailbox.click_y[i], -1.0f);
+        atomic_init(&g_engine.mailbox.mouse_left[i], 0);
+        atomic_init(&g_engine.mailbox.mouse_right[i], 0);
+        atomic_init(&g_engine.mailbox.mouse_captured[i], 0);
+        atomic_init(&g_engine.mailbox.window_resized[i], 0);
+        atomic_init(&g_engine.mailbox.win_w[i], 1280);
+        atomic_init(&g_engine.mailbox.win_h[i], 720);
+        atomic_init(&g_engine.mailbox.key_space[i], 0);
+    }
 }
 
 // --- THE CONSENSUS LUA OVERLORD THREAD ---
@@ -959,10 +964,12 @@ THREAD_FUNC lua_co_overlord_loop(void* arg) {
     return THREAD_RETURN_VAL;
 }
 
+// === DOMAIN: MAIN EXECUTION ===
+
+// ... [lua_co_overlord_loop unchanged] ...
+
 int main(int argc, char** argv) {
     printf("[C-CORE] Booting Weaver Engine Host...\n");
-
-    // Strict OS-Level Display Server requirement
     if (!glfwInit()) {
         printf("[C-FATAL] GLFW failed to initialize. Display Server missing?\n");
         return -1;
@@ -970,89 +977,86 @@ int main(int argc, char** argv) {
 
     vx_init_mailbox();
 
-    atomic_init(&g_engine.mailbox.glfw_cmd, CMD_IDLE);
-    atomic_init(&g_engine.mailbox.last_key_pressed, 0);
-    atomic_init(&g_engine.mailbox.wasd_mask, 0);
-    atomic_init(&g_engine.mailbox.mouse_dx, 0.0f);
-    atomic_init(&g_engine.mailbox.mouse_dy, 0.0f);
-    atomic_init(&g_engine.mailbox.mouse_left, 0);
-    atomic_init(&g_engine.mailbox.mouse_right, 0);
-    atomic_init(&g_engine.mailbox.key_space, 0);
-
-    // Launch the Lua VM in a decoupled OS thread using the original safe NULL pattern
     vmath_thread_t lua_thread = vmath_thread_start(lua_co_overlord_loop, NULL);
 
-    GLFWwindow* window = NULL;
+    // CRITICAL: The OS Thread must track an array of windows
+    GLFWwindow* windows[MAX_WINDOWS] = {NULL};
 
-    // --- THE OS EVENT PUMP (MAIN THREAD) ---
-    // Preserves your original timing sequence perfectly.
     while (vx_core_is_running()) {
-        if (window) glfwPollEvents();
+        // Poll events once per tick if ANY window is alive
+        bool has_windows = false;
+        for (int i = 0; i < MAX_WINDOWS; i++) {
+            if (windows[i] != NULL) {
+                has_windows = true;
+                break;
+            }
+        }
+        if (has_windows) glfwPollEvents();
 
-        int cmd = atomic_exchange_explicit(&g_engine.mailbox.glfw_cmd, CMD_IDLE, memory_order_acquire);
+        // Loop over every tenant slot to process commands and lifecycle events
+        for (int id = 0; id < MAX_WINDOWS; id++) {
+            int cmd = atomic_exchange_explicit(&g_engine.mailbox.glfw_cmd[id], CMD_IDLE, memory_order_acquire);
 
-        if (cmd == CMD_BOOT_WINDOW && window == NULL) {
-            int w = atomic_load_explicit(&g_engine.mailbox.glfw_arg_w, memory_order_relaxed);
-            int h = atomic_load_explicit(&g_engine.mailbox.glfw_arg_h, memory_order_relaxed);
+            if (cmd == CMD_BOOT_WINDOW && windows[id] == NULL) {
+                int w = atomic_load_explicit(&g_engine.mailbox.glfw_arg_w[id], memory_order_relaxed);
+                int h = atomic_load_explicit(&g_engine.mailbox.glfw_arg_h[id], memory_order_relaxed);
 
-            glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-            glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
-            window = glfwCreateWindow(w, h, "Weaver Engine", NULL, NULL);
-            glfwSetWindowSizeLimits(window, 640, 360, GLFW_DONT_CARE, GLFW_DONT_CARE);
+                glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+                glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+                windows[id] = glfwCreateWindow(w, h, "Weaver Engine", NULL, NULL);
 
-            // --- THE WINDOWS FOCUS OVERRIDE HACK ---
-            glfwShowWindow(window);
-            glfwSetWindowAttrib(window, GLFW_FLOATING, GLFW_TRUE);  // Force OS to overlay it
-            glfwFocusWindow(window);                                // Grab the input lock
-            glfwSetWindowAttrib(window, GLFW_FLOATING, GLFW_FALSE); // Sink it back to normal
-            glfwPollEvents();                                       // Flush the OS event queue instantly
+                // CRITICAL FIX: Bind the tenant ID to the GLFW window for callbacks
+                glfwSetWindowUserPointer(windows[id], (void*)(intptr_t)id);
 
-            glfwSetFramebufferSizeCallback(window, glfw_framebuffer_size_callback);
-            glfwSetKeyCallback(window, glfw_key_callback);
-            glfwSetCursorPosCallback(window, glfw_cursor_callback);
-            glfwSetMouseButtonCallback(window, glfw_mouse_button_callback);
+                glfwSetWindowSizeLimits(windows[id], 640, 360, GLFW_DONT_CARE, GLFW_DONT_CARE);
+                glfwShowWindow(windows[id]);
+                glfwSetWindowAttrib(windows[id], GLFW_FLOATING, GLFW_TRUE);
+                glfwFocusWindow(windows[id]);
+                glfwSetWindowAttrib(windows[id], GLFW_FLOATING, GLFW_FALSE);
 
-            int fb_w, fb_h;
-            glfwGetFramebufferSize(window, &fb_w, &fb_h);
-            atomic_store_explicit(&g_engine.mailbox.win_w, fb_w, memory_order_release);
-            atomic_store_explicit(&g_engine.mailbox.win_h, fb_h, memory_order_release);
+                glfwSetFramebufferSizeCallback(windows[id], glfw_framebuffer_size_callback);
+                glfwSetKeyCallback(windows[id], glfw_key_callback);
+                glfwSetCursorPosCallback(windows[id], glfw_cursor_callback);
+                glfwSetMouseButtonCallback(windows[id], glfw_mouse_button_callback);
 
-            void* instance = atomic_load_explicit(&g_engine.mailbox.vk_instance, memory_order_acquire);
-            if (instance != NULL) {
-                VkSurfaceKHR surface;
-                if (glfwCreateWindowSurface((VkInstance)instance, window, NULL, &surface) == VK_SUCCESS) {
-                    atomic_store_explicit(&g_engine.mailbox.vk_surface, (void*)surface, memory_order_release);
-                    printf("[C-CORE] Window & Surface Created on Lua's Demand!\n");
+                int fb_w, fb_h;
+                glfwGetFramebufferSize(windows[id], &fb_w, &fb_h);
+                atomic_store_explicit(&g_engine.mailbox.win_w[id], fb_w, memory_order_release);
+                atomic_store_explicit(&g_engine.mailbox.win_h[id], fb_h, memory_order_release);
+
+                void* instance = atomic_load_explicit(&g_engine.mailbox.vk_instance[id], memory_order_acquire);
+                if (instance != NULL) {
+                    VkSurfaceKHR surface;
+                    if (glfwCreateWindowSurface((VkInstance)instance, windows[id], NULL, &surface) == VK_SUCCESS) {
+                        atomic_store_explicit(&g_engine.mailbox.vk_surface[id], (void*)surface, memory_order_release);
+                        printf("[C-CORE] Tenant %d: Window & Surface Created on Lua's Demand!\n", id);
+                    }
                 }
             }
-        }
-        else if (cmd == CMD_KILL_WINDOW && window != NULL) {
-            // 1. Lock the Render Thread out of the WSI
-            atomic_store_explicit(&g_wsi_state, 0, memory_order_release);
+            else if (cmd == CMD_KILL_WINDOW && windows[id] != NULL) {
+                // === TEARDOWN SYNCHRONIZATION ===
+                atomic_store_explicit(&g_wsi_state[id], 0, memory_order_release);
 
-            // 2. Wait for it to finish its current frame
-            while (atomic_load_explicit(&g_render_busy, memory_order_acquire)) {
-                SLEEP_MS(1);
+                while (atomic_load_explicit(&g_render_busy[id], memory_order_acquire)) {
+                    SLEEP_MS(1);
+                }
+
+                if (g_window_wsi[id].device) {
+                    vkDeviceWaitIdle(g_window_wsi[id].device);
+                }
+
+                glfwDestroyWindow(windows[id]);
+                windows[id] = NULL;
+                atomic_store_explicit(&g_engine.mailbox.vk_surface[id], NULL, memory_order_release);
+                printf("[C-CORE] Tenant %d Window Destroyed Safely. Render Thread isolated.\n", id);
             }
 
-            // 3. Ensure the GPU has finished executing commands associated with this surface
-            if (g_wsi.device) {
-                vkDeviceWaitIdle(g_wsi.device);
+            if (windows[id] && glfwWindowShouldClose(windows[id])) {
+                atomic_store_explicit(&g_engine.mailbox.last_key_pressed[id], GLFW_KEY_ESCAPE, memory_order_release);
+                glfwSetWindowShouldClose(windows[id], GLFW_FALSE);
             }
-
-            // 4. Safe Teardown
-            glfwDestroyWindow(window);
-            window = NULL;
-            atomic_store_explicit(&g_engine.mailbox.vk_surface, NULL, memory_order_release);
-            printf("[C-CORE] Window Destroyed Safely. Render Thread isolated.\n");
         }
 
-        if (window && glfwWindowShouldClose(window)) {
-            atomic_store_explicit(&g_engine.mailbox.last_key_pressed, GLFW_KEY_ESCAPE, memory_order_release);
-            glfwSetWindowShouldClose(window, GLFW_FALSE);
-        }
-
-        // Exact original sleep timing
         SLEEP_MS(1);
     }
 
@@ -1060,9 +1064,13 @@ int main(int argc, char** argv) {
     while (atomic_load_explicit(&g_engine.mailbox.lua_finished, memory_order_acquire) == 0) {
         SLEEP_MS(1);
     }
-
     vmath_thread_join(lua_thread);
-    if (window) glfwDestroyWindow(window);
+
+    // Safely cleanup any remaining open windows during a hard shutdown
+    for (int i = 0; i < MAX_WINDOWS; i++) {
+        if (windows[i]) glfwDestroyWindow(windows[i]);
+    }
+
     glfwTerminate();
     printf("[C-CORE] Clean Exit.\n");
     return 0;
