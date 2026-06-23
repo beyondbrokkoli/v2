@@ -59,6 +59,13 @@ static struct {
     .local_id = 0
 };
 
+// Track the centralized WAN proxy so we don't clobber P2P addresses with it
+static uint32_t g_relay_ip_addr = 0;
+
+EXPORT void vx_net_set_relay_ip(const char* ip) {
+    if (ip) g_relay_ip_addr = inet_addr(ip);
+}
+
 static inline int net_set_nonblocking(int sock) {
 #if defined(_WIN32)
     u_long mode = 1;
@@ -122,6 +129,11 @@ EXPORT int vx_net_host(int port) {
     setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 #endif
 
+    // [CRITICAL WAN PATCH]: Demand 1MB Kernel Buffers to prevent local packet drops during latency spikes
+    int buf_size = 1024 * 1024;
+    setsockopt(sock, SOL_SOCKET, SO_RCVBUF, (const char*)&buf_size, sizeof(buf_size));
+    setsockopt(sock, SOL_SOCKET, SO_SNDBUF, (const char*)&buf_size, sizeof(buf_size));
+
     if (net_set_nonblocking(sock) < 0) {
         NET_CLOSE(sock);
         return -1;
@@ -167,28 +179,18 @@ EXPORT int vx_net_connect(uint8_t peer_id, const char* ip, int port) {
 EXPORT void vx_net_set_session(uint64_t token) { g_net.session_token = token; }
 EXPORT void vx_net_set_player_id(uint8_t id) { g_net.local_id = id; }
 
-// Dumps a packet onto the network for all active peers
-EXPORT void vx_net_send(LockstepPacket* pkt) {
-    if (g_net.sock == NET_INVALID || !pkt) return;
-    for (int i = 0; i < 8; i++) {
-        if (i == g_net.local_id || !g_net.peers[i].active) continue;
-        sendto(g_net.sock, (const char*)pkt, sizeof(LockstepPacket), 0,
-              (struct sockaddr*)&g_net.peers[i].addr, g_net.peers[i].addr_len);
-    }
-}
 
-// Add targeted routing so the pump can dynamically pack history per opponent
-EXPORT void vx_net_send_to(LockstepPacket* pkt, uint8_t target_peer) {
-    if (g_net.sock == NET_INVALID || !pkt || target_peer >= 8) return;
+EXPORT void vx_net_send_to(void* data, size_t len, uint8_t target_peer) {
+    if (g_net.sock == NET_INVALID || !data || target_peer >= 8) return;
     if (!g_net.peers[target_peer].active) return;
 
-    sendto(g_net.sock, (const char*)pkt, sizeof(LockstepPacket), 0,
+    sendto(g_net.sock, (const char*)data, len, 0,
            (struct sockaddr*)&g_net.peers[target_peer].addr,
            g_net.peers[target_peer].addr_len);
 }
 
 // Drains the OS UDP buffer directly into Lua's FFI memory block
-EXPORT int vx_net_recv_all(LockstepPacket* out_buffer, int max_count) {
+EXPORT int vx_net_recv_all(RxPacket* out_buffer, int max_count) {
     if (g_net.sock == NET_INVALID || !out_buffer) return 0;
 
     struct sockaddr_in from;
@@ -196,22 +198,23 @@ EXPORT int vx_net_recv_all(LockstepPacket* out_buffer, int max_count) {
     int count = 0;
 
     while (count < max_count) {
-        ssize_t recvd = recvfrom(g_net.sock, (char*)&out_buffer[count], sizeof(LockstepPacket), 0, (struct sockaddr*)&from, &from_len);
-
-        // EWOULDBLOCK means the OS buffer is empty. We are done for this frame.
+        ssize_t recvd = recvfrom(g_net.sock, (char*)out_buffer[count].data, 2048, 0, (struct sockaddr*)&from, &from_len);
         if (recvd < 0) break;
 
-        // Only accept perfectly sized packets
-        if (recvd == sizeof(LockstepPacket)) {
-            if (out_buffer[count].session_token != g_net.session_token) continue;
+        // At minimum, it must contain the base Lockstep headers to be valid
+        if (recvd >= 36) {
+            // Cast the raw data to easily read the headers!
+            LockstepPacket* header = (LockstepPacket*)out_buffer[count].data;
 
-            // UDP Pivot Hack: Learn IPs on the fly
-            uint8_t pid = out_buffer[count].player_id;
-            if (pid < 8) {
+            if (header->session_token != g_net.session_token) continue;
+
+            uint8_t pid = header->player_id;
+            if (pid < 8 && from.sin_addr.s_addr != g_relay_ip_addr) {
                 g_net.peers[pid].addr = from;
                 g_net.peers[pid].addr_len = from_len;
                 g_net.peers[pid].active = 1;
             }
+            out_buffer[count].len = (uint16_t)recvd;
             count++;
         }
     }

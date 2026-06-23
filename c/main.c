@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
 #include <stdbool.h>
 #include <stdatomic.h>
 #include <stdalign.h>
@@ -110,21 +111,27 @@ double last_mx = 0.0, last_my = 0.0;
 bool first_mouse = true;
 static bool s_mouse_captured = false;
 
+static atomic_flag s_mouse_lock = ATOMIC_FLAG_INIT;
+
 void glfw_cursor_callback(GLFWwindow* window, double xpos, double ypos) {
-    // Record absolute coordinates for Lua edge-panning
     atomic_store_explicit(&g_engine.mailbox.mouse_x, (float)xpos, memory_order_release);
     atomic_store_explicit(&g_engine.mailbox.mouse_y, (float)ypos, memory_order_release);
 
-    // 3. Normal Delta Calculation
     float dx = (float)(xpos - last_mx);
     float dy = (float)(ypos - last_my);
-    last_mx = xpos; last_my = ypos;
+    last_mx = xpos;
+    last_my = ypos;
 
-    float current_dx = atomic_load_explicit(&g_engine.mailbox.mouse_dx, memory_order_acquire);
-    while (!atomic_compare_exchange_weak_explicit(&g_engine.mailbox.mouse_dx, &current_dx, current_dx + dx, memory_order_release, memory_order_relaxed));
+    // Safely accumulate floats using a spinlock
+    while (atomic_flag_test_and_set_explicit(&s_mouse_lock, memory_order_acquire));
 
-    float current_dy = atomic_load_explicit(&g_engine.mailbox.mouse_dy, memory_order_acquire);
-    while (!atomic_compare_exchange_weak_explicit(&g_engine.mailbox.mouse_dy, &current_dy, current_dy + dy, memory_order_release, memory_order_relaxed));
+    float current_dx = atomic_load_explicit(&g_engine.mailbox.mouse_dx, memory_order_relaxed);
+    atomic_store_explicit(&g_engine.mailbox.mouse_dx, current_dx + dx, memory_order_relaxed);
+
+    float current_dy = atomic_load_explicit(&g_engine.mailbox.mouse_dy, memory_order_relaxed);
+    atomic_store_explicit(&g_engine.mailbox.mouse_dy, current_dy + dy, memory_order_relaxed);
+
+    atomic_flag_clear_explicit(&s_mouse_lock, memory_order_release);
 }
 
 void glfw_mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {
@@ -282,8 +289,18 @@ EXPORT void vx_sys_eject_validation(void* instance) {
 }
 
 EXPORT uint32_t vx_input_wasd() { return atomic_load_explicit(&g_engine.mailbox.wasd_mask, memory_order_acquire); }
-EXPORT float vx_input_mouse_dx() { return atomic_exchange_explicit(&g_engine.mailbox.mouse_dx, 0.0f, memory_order_acquire); }
-EXPORT float vx_input_mouse_dy() { return atomic_exchange_explicit(&g_engine.mailbox.mouse_dy, 0.0f, memory_order_acquire); }
+EXPORT float vx_input_mouse_dx() {
+    while (atomic_flag_test_and_set_explicit(&s_mouse_lock, memory_order_acquire));
+    float val = atomic_exchange_explicit(&g_engine.mailbox.mouse_dx, 0.0f, memory_order_relaxed);
+    atomic_flag_clear_explicit(&s_mouse_lock, memory_order_release);
+    return val;
+}
+EXPORT float vx_input_mouse_dy() {
+    while (atomic_flag_test_and_set_explicit(&s_mouse_lock, memory_order_acquire));
+    float val = atomic_exchange_explicit(&g_engine.mailbox.mouse_dy, 0.0f, memory_order_relaxed);
+    atomic_flag_clear_explicit(&s_mouse_lock, memory_order_release);
+    return val;
+}
 EXPORT int vx_sys_resize_flag() { return atomic_exchange_explicit(&g_engine.mailbox.window_resized, 0, memory_order_acquire); }
 EXPORT void vx_sys_window_size(int* w, int* h) {
     *w = atomic_load_explicit(&g_engine.mailbox.win_w, memory_order_acquire);
@@ -314,7 +331,11 @@ typedef struct {
 
 // INSTANTIATE WITH MASK
 static RenderRing g_ring = { .ready_idx = -1, .locked_mask = 0 };
+
 static RenderThreadInit g_wsi;
+static atomic_int g_wsi_state = 0;   // 0 = Dead/Updating, 1 = Ready to Render
+static atomic_int g_render_busy = 0; // 1 = Render Thread is inside a Vulkan execution block
+
 static vmath_thread_t g_render_thread;
 static atomic_int g_render_thread_active = 0;
 
@@ -386,12 +407,27 @@ THREAD_FUNC transfer_thread_loop(void* arg) {
 
     PFN_vkQueueSubmit pfnSubmit = (PFN_vkQueueSubmit)g_wsi.vkQueueSubmit;
 
-    while (atomic_load_explicit(&g_transfer_thread_active, memory_order_acquire) && atomic_load_explicit(&g_engine.mailbox.is_running, memory_order_acquire)) {
-        bool worked = false;
+    // [NEW] Allocate a dedicated fence for the DMA transfer
+    VkFence transfer_fence;
+    VkFenceCreateInfo fence_info = {
+        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+        .flags = 1 // VK_FENCE_CREATE_SIGNALED_BIT - Crucial for the first loop!
+    };
+    vkCreateFence(g_wsi.device, &fence_info, NULL, &transfer_fence);
+    PFN_vkWaitForFences pfnWait = (PFN_vkWaitForFences)g_wsi.vkWaitForFences;
+    PFN_vkResetFences pfnReset = (PFN_vkResetFences)g_wsi.vkResetFences;
 
+    while (atomic_load_explicit(&g_transfer_thread_active, memory_order_acquire) &&
+           atomic_load_explicit(&g_engine.mailbox.is_running, memory_order_acquire)) {
+
+        bool worked = false;
         for(int i = 0; i < TRANSFER_RING_SIZE; i++) {
             if (atomic_load_explicit(&g_transfer_ring[i].status, memory_order_acquire) == 2) {
                 TransferJob* job = &g_transfer_ring[i];
+
+                // [NEW] Ensure the GPU is entirely done with the PREVIOUS transfer before resetting
+                pfnWait(g_wsi.device, 1, &transfer_fence, VK_TRUE, UINT64_MAX);
+                pfnReset(g_wsi.device, 1, &transfer_fence);
 
                 vkResetCommandBuffer(cmd, 0);
                 VkCommandBufferBeginInfo beginInfo = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
@@ -421,29 +457,37 @@ THREAD_FUNC transfer_thread_loop(void* arg) {
 
                 // Submit directly to the dedicated Transfer Queue!
                 printf("[C-CORE] Submitting DMA Transfer. Timeline Signal Value: %llu\n", (unsigned long long)job->signal_val);
-                pfnSubmit(g_wsi.transfer_queue, 1, &submitInfo, VK_NULL_HANDLE);
+                pfnSubmit(g_wsi.transfer_queue, 1, &submitInfo, transfer_fence);
 
-                // Free the mailbox slot immediately.
-                // Lua checks the Semaphore value, not this mailbox, to know when it's done!
                 atomic_store_explicit(&job->status, 0, memory_order_release);
                 worked = true;
             }
         }
-
-        // Zero-overhead sleep if no jobs exist
         if (!worked) SLEEP_MS(1);
     }
 
+    // [NEW] Cleanup the fence on thread death
+    vkDestroyFence(g_wsi.device, transfer_fence, NULL);
     printf("[C-CORE] Async Transfer Thread gracefully terminated.\n");
     return NULL;
 }
 
 EXPORT void vx_stream_init(RenderThreadInit* wsi) {
+    // 1. Stop the Render Thread from starting a new frame
+    atomic_store_explicit(&g_wsi_state, 0, memory_order_release);
+
+    // 2. Wait for the Render Thread to clear any active Vulkan block
+    while (atomic_load_explicit(&g_render_busy, memory_order_acquire)) {
+        SLEEP_MS(1);
+    }
+
+    // 3. Safe to perform the non-atomic struct copy
     g_wsi = *wsi;
 
-    // Purge stale packets and zero the lock mask across WSI rebuilds
+    // 4. Restart the Render Thread and reset the IPC ring
     atomic_store_explicit(&g_ring.ready_idx, -1, memory_order_release);
     atomic_store_explicit(&g_ring.locked_mask, 0, memory_order_release);
+    atomic_store_explicit(&g_wsi_state, 1, memory_order_release);
 }
 
 EXPORT RenderPacket* vx_stream_packet(int idx) {
@@ -454,14 +498,14 @@ EXPORT int vx_stream_acquire() {
     uint32_t mask = LOAD(g_ring.locked_mask);
     int ready = LOAD(g_ring.ready_idx);
 
-    // Search forward from the last ready index for the ONE free slot
     for (int i = 1; i <= RING_SIZE; i++) {
         int idx = (ready + i) % RING_SIZE;
         if ((mask & (1 << idx)) == 0) {
-            return idx; // Found the safe slot!
+            // LUA NOW LOCKS THE SLOT IMMEDIATELY
+            atomic_fetch_or_explicit(&g_ring.locked_mask, (1 << idx), memory_order_release);
+            return idx;
         }
     }
-    // THE FIX: Do not return 0. Return -1 to indicate ring saturation.
     return -1;
 }
 
@@ -654,18 +698,28 @@ THREAD_FUNC render_thread_loop(void* arg) {
     while (atomic_load_explicit(&g_render_thread_active, memory_order_acquire) &&
            atomic_load_explicit(&g_engine.mailbox.is_running, memory_order_acquire)) {
 
-        // 1. Grab the latest frame from Lua
-        int ready = atomic_load_explicit(&g_ring.ready_idx, memory_order_acquire);
-        if (ready == -1 || ready == local_read) {
+        // Check if WSI is alive before doing anything
+        if (atomic_load_explicit(&g_wsi_state, memory_order_acquire) == 0) {
             SLEEP_MS(1);
             continue;
         }
-        local_read = ready;
 
-        // THE TEMPORAL SEAL: INSTANT LOCK
-        // Lock the slot immediately so Lua cannot lap the ring
-        // and overwrite it while we sleep on the Vulkan Fence!
-        atomic_fetch_or_explicit(&g_ring.locked_mask, (1 << local_read), memory_order_release);
+        int ready = atomic_load_explicit(&g_ring.ready_idx, memory_order_acquire);
+        if (ready == -1 || ready == local_read) {
+             SLEEP_MS(1);
+            continue;
+        }
+
+        // Enter Vulkan Execution Block
+        atomic_store_explicit(&g_render_busy, 1, memory_order_release);
+
+        // Sanity check: Did Lua trigger an update while we were setting busy?
+        if (atomic_load_explicit(&g_wsi_state, memory_order_acquire) == 0) {
+            atomic_store_explicit(&g_render_busy, 0, memory_order_release);
+            continue;
+        }
+
+        local_read = ready;
 
         // 2. Safe to sleep on the GPU WSI
         pfnWait(g_wsi.device, 1, &g_wsi.in_flight[current_frame], VK_TRUE, UINT64_MAX);
@@ -691,6 +745,8 @@ THREAD_FUNC render_thread_loop(void* arg) {
 
         if (res == VK_ERROR_OUT_OF_DATE_KHR) {
             atomic_store_explicit(&g_engine.mailbox.window_resized, 1, memory_order_release);
+            // CRITICAL: You MUST release the lock before continuing!
+            atomic_store_explicit(&g_render_busy, 0, memory_order_release);
             SLEEP_MS(10);
             continue;
         }
@@ -729,6 +785,9 @@ THREAD_FUNC render_thread_loop(void* arg) {
             .pImageIndices = &img_idx
         };
         pfnPresent(g_wsi.queue, &presentInfo);
+
+        // EXIT VULKAN EXECUTION BLOCK
+        atomic_store_explicit(&g_render_busy, 0, memory_order_release);
 
         // Keep CPU Ring Buffer locked to 3 slots
         current_frame = (current_frame + 1) % 3;
@@ -784,22 +843,32 @@ void vx_init_mailbox() {
     atomic_init(&g_engine.mailbox.mouse_captured, 0); // Start Free
 }
 
+// --- THE CONSENSUS LUA OVERLORD THREAD ---
+// Reverted to the original, pure, zero-overhead boot sequence.
 THREAD_FUNC lua_co_overlord_loop(void* arg) {
     printf("[LUA-OS-THREAD] Booting Lua VM...\n");
     lua_State* L = luaL_newstate();
     luaL_openlibs(L);
+
+    // Engine executes the root main.lua - Lua handles its own package.paths
     if (luaL_dofile(L, "main.lua") != LUA_OK) {
         printf("\n[LUA FATAL ERROR] %s\n", lua_tostring(L, -1));
     }
+
     lua_close(L);
     printf("[LUA-OS-THREAD] VM Destroyed.\n");
     return THREAD_RETURN_VAL;
 }
 
 int main(int argc, char** argv) {
-    printf("[C-CORE] Booting Headless Worker...\n");
+    printf("[C-CORE] Booting Weaver Engine Host...\n");
 
-    if (!glfwInit()) return -1;
+    // Strict OS-Level Display Server requirement
+    if (!glfwInit()) {
+        printf("[C-FATAL] GLFW failed to initialize. Display Server missing?\n");
+        return -1;
+    }
+
     vx_init_mailbox();
 
     atomic_init(&g_engine.mailbox.glfw_cmd, CMD_IDLE);
@@ -811,10 +880,13 @@ int main(int argc, char** argv) {
     atomic_init(&g_engine.mailbox.mouse_right, 0);
     atomic_init(&g_engine.mailbox.key_space, 0);
 
+    // Launch the Lua VM in a decoupled OS thread using the original safe NULL pattern
     vmath_thread_t lua_thread = vmath_thread_start(lua_co_overlord_loop, NULL);
 
     GLFWwindow* window = NULL;
 
+    // --- THE OS EVENT PUMP (MAIN THREAD) ---
+    // Preserves your original timing sequence perfectly.
     while (vx_core_is_running()) {
         if (window) glfwPollEvents();
 
@@ -826,7 +898,7 @@ int main(int argc, char** argv) {
 
             glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
             glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
-            window = glfwCreateWindow(w, h, "VX Engine Remote", NULL, NULL);
+            window = glfwCreateWindow(w, h, "Weaver Engine", NULL, NULL);
             glfwSetWindowSizeLimits(window, 640, 360, GLFW_DONT_CARE, GLFW_DONT_CARE);
 
             // --- THE WINDOWS FOCUS OVERRIDE HACK ---
@@ -856,16 +928,32 @@ int main(int argc, char** argv) {
             }
         }
         else if (cmd == CMD_KILL_WINDOW && window != NULL) {
+            // 1. Lock the Render Thread out of the WSI
+            atomic_store_explicit(&g_wsi_state, 0, memory_order_release);
+
+            // 2. Wait for it to finish its current frame
+            while (atomic_load_explicit(&g_render_busy, memory_order_acquire)) {
+                SLEEP_MS(1);
+            }
+
+            // 3. Ensure the GPU has finished executing commands associated with this surface
+            if (g_wsi.device) {
+                vkDeviceWaitIdle(g_wsi.device);
+            }
+
+            // 4. Safe Teardown
             glfwDestroyWindow(window);
             window = NULL;
             atomic_store_explicit(&g_engine.mailbox.vk_surface, NULL, memory_order_release);
-            printf("[C-CORE] Window Destroyed. Running Headless...\n");
+            printf("[C-CORE] Window Destroyed Safely. Render Thread isolated.\n");
         }
 
         if (window && glfwWindowShouldClose(window)) {
             atomic_store_explicit(&g_engine.mailbox.last_key_pressed, GLFW_KEY_ESCAPE, memory_order_release);
             glfwSetWindowShouldClose(window, GLFW_FALSE);
         }
+
+        // Exact original sleep timing
         SLEEP_MS(1);
     }
 

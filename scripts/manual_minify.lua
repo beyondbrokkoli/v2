@@ -80,21 +80,21 @@ print("--- AI SNAPSHOT ---")
 
 local order = {
     -- [ ENTRY POINTS ]
-    "lua/structs.lua",
-    "lua/config_engine.lua",
-    "lua/sim_world.lua",
-    "lua/registry_export.lua",
-    "build.lua",
-    "c/shared_structs.h",
---    "c/vx_net.c",
---    "lua/network.lua",
---    "lua/net_pump.lua",
---    "lua/fsm_core.lua",
 --    "main.lua",
---     [ C-CORE ]
---    "c/main.c",
---     [ LUA ENGINE MODULES ]
+--    "lua/config_net.lua",
+--    "lua/config_sim.lua",
+--    "lua/config_gfx.lua",
 --    "lua/registry_vk.lua",
+--    "lua/registry_export.lua",
+--    "lua/structs.lua",
+--    "build.lua",
+    -- [ C-CORE ]
+--    "c/vx_net.c",
+    "c/shared_structs.h",
+    "c/main.c",
+    -- [ LUA ENGINE MODULES ]
+--    "lua/registry_vk.lua",
+--    "lua/sequence.lua",
 --    "lua/pipeline_manifest.lua",
 --    "lua/vulkan_core.lua",
 --    "lua/swapchain.lua",
@@ -102,13 +102,16 @@ local order = {
 --    "lua/graphics_pipeline.lua",
 --    "lua/compute_pipeline.lua",
 --    "lua/renderer.lua",
---    "lua/render_queue.lua",
+--    "lua/renderer.lua",
 --    "lua/memory.lua",
 --    "lua/vmath.lua",
+
+--    "lua/config_engine.lua",
+
+--    "lua/network.lua",
 --    "lua/camera.lua",
 --    "lua/json_util.lua",
 
---    "lua/render_queue.lua",
     -- [ GLSL SHADERS & SSOT ]
 --    "glsl/registry.glsl",
 --    "glsl/shared.glsl",
