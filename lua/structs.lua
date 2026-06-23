@@ -111,6 +111,7 @@ M.specs = {
         members = {
             { type = "DrawCommand*", name = "draw_queue" },
             { type = "uint32_t", name = "draw_count" },
+            { type = "uint32_t", name = "target_window_id" }, -- [NEW] Multiplexer Routing ID
             { type = "uint64_t", name = "gfx_layout" },
             { type = "uint64_t", name = "vertex_buffer" },
             { type = "uint64_t", name = "index_buffer" },

@@ -61,6 +61,7 @@ typedef struct {
     alignas(64) _Atomic int ready_index;
     _Atomic int is_running;
     _Atomic int lua_finished;
+    _Atomic int active_window;
 
     // --- MULTI-TENANT STATE (Arrays) ---
     _Atomic(void*) vk_instance[MAX_WINDOWS];
@@ -105,8 +106,9 @@ EXPORT int vx_input_last_key() {
     return atomic_exchange_explicit(&g_engine.mailbox.last_key_pressed, 0, memory_order_acquire);
 }
 
-// THIS NEEDS TO BE SLIGHTLY ADJUSTED
-static bool s_mouse_captured = false;
+EXPORT int vx_input_get_active_window() {
+    return atomic_load_explicit(&g_engine.mailbox.active_window, memory_order_acquire);
+}
 
 static atomic_flag s_mouse_lock = ATOMIC_FLAG_INIT;
 
@@ -145,103 +147,130 @@ void glfw_cursor_callback(GLFWwindow* window, double xpos, double ypos) {
 }
 
 void glfw_mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {
+    int id = (int)(intptr_t)glfwGetWindowUserPointer(window);
+    if (id < 0 || id >= MAX_WINDOWS) return;
+
+    // Track the active window on any mouse interaction
+    if (action == GLFW_PRESS) {
+        atomic_store_explicit(&g_engine.mailbox.active_window, id, memory_order_release);
+    }
+
     if (button == GLFW_MOUSE_BUTTON_LEFT) {
         if (action == GLFW_PRESS) {
             double cx, cy;
             glfwGetCursorPos(window, &cx, &cy); // Get exact coordinate of the event
-            atomic_store_explicit(&g_engine.mailbox.click_x, (float)cx, memory_order_release);
-            atomic_store_explicit(&g_engine.mailbox.click_y, (float)cy, memory_order_release);
-            atomic_store_explicit(&g_engine.mailbox.mouse_left, 1, memory_order_release);
+            atomic_store_explicit(&g_engine.mailbox.click_x[id], (float)cx, memory_order_release);
+            atomic_store_explicit(&g_engine.mailbox.click_y[id], (float)cy, memory_order_release);
+            atomic_store_explicit(&g_engine.mailbox.mouse_left[id], 1, memory_order_release);
         } else {
-            atomic_store_explicit(&g_engine.mailbox.mouse_left, 0, memory_order_release);
+            atomic_store_explicit(&g_engine.mailbox.mouse_left[id], 0, memory_order_release);
         }
     } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
         // DO NOT LOSE THIS!
-        atomic_store_explicit(&g_engine.mailbox.mouse_right, (action == GLFW_PRESS) ? 1 : 0, memory_order_release);
+        atomic_store_explicit(&g_engine.mailbox.mouse_right[id], (action == GLFW_PRESS) ? 1 : 0, memory_order_release);
     }
 }
 
-EXPORT int vx_input_mouse_btn(int btn) {
-    if (btn == 0) return atomic_load_explicit(&g_engine.mailbox.mouse_left, memory_order_acquire);
-    if (btn == 1) return atomic_load_explicit(&g_engine.mailbox.mouse_right, memory_order_acquire);
+EXPORT int vx_input_mouse_btn(int win_id, int btn) {
+    if (win_id < 0 || win_id >= MAX_WINDOWS) return 0;
+    if (btn == 0) return atomic_load_explicit(&g_engine.mailbox.mouse_left[win_id], memory_order_acquire);
+    if (btn == 1) return atomic_load_explicit(&g_engine.mailbox.mouse_right[win_id], memory_order_acquire);
     return 0;
 }
 
-EXPORT float vx_input_mouse_x() { return atomic_load_explicit(&g_engine.mailbox.mouse_x, memory_order_acquire); }
-EXPORT float vx_input_mouse_y() { return atomic_load_explicit(&g_engine.mailbox.mouse_y, memory_order_acquire); }
-
-EXPORT float vx_input_click_x() {
-    return atomic_load_explicit(&g_engine.mailbox.click_x, memory_order_acquire);
-}
-EXPORT float vx_input_click_y() {
-    return atomic_load_explicit(&g_engine.mailbox.click_y, memory_order_acquire);
+EXPORT float vx_input_mouse_x(int win_id) {
+    if (win_id < 0 || win_id >= MAX_WINDOWS) return 0.0f;
+    return atomic_load_explicit(&g_engine.mailbox.mouse_x[win_id], memory_order_acquire);
 }
 
-EXPORT int vx_input_is_captured() {
-    return atomic_load_explicit(&g_engine.mailbox.mouse_captured, memory_order_acquire);
+EXPORT float vx_input_mouse_y(int win_id) {
+    if (win_id < 0 || win_id >= MAX_WINDOWS) return 0.0f;
+    return atomic_load_explicit(&g_engine.mailbox.mouse_y[win_id], memory_order_acquire);
+}
+
+EXPORT float vx_input_click_x(int win_id) {
+    if (win_id < 0 || win_id >= MAX_WINDOWS) return -1.0f;
+    return atomic_load_explicit(&g_engine.mailbox.click_x[win_id], memory_order_acquire);
+}
+
+EXPORT float vx_input_click_y(int win_id) {
+    if (win_id < 0 || win_id >= MAX_WINDOWS) return -1.0f;
+    return atomic_load_explicit(&g_engine.mailbox.click_y[win_id], memory_order_acquire);
+}
+
+EXPORT int vx_input_is_captured(int win_id) {
+    if (win_id < 0 || win_id >= MAX_WINDOWS) return 0;
+    return atomic_load_explicit(&g_engine.mailbox.mouse_captured[win_id], memory_order_acquire);
 }
 
 void glfw_key_callback(GLFWwindow* window, int key, int scancode, int action, int mods) {
+    int id = (int)(intptr_t)glfwGetWindowUserPointer(window);
+    if (id < 0 || id >= MAX_WINDOWS) return;
+
+    // Ensure this window is marked active if the user is typing in it
+    atomic_store_explicit(&g_engine.mailbox.active_window, id, memory_order_release);
+
     if (action == GLFW_PRESS || action == GLFW_RELEASE) {
         uint32_t bit = 0;
         if (key == GLFW_KEY_W) bit = 1; else if (key == GLFW_KEY_S) bit = 2;
         else if (key == GLFW_KEY_A) bit = 4; else if (key == GLFW_KEY_D) bit = 8;
         else if (key == GLFW_KEY_E) bit = 16; else if (key == GLFW_KEY_Q) bit = 32;
         if (bit) {
-            uint32_t mask = atomic_load_explicit(&g_engine.mailbox.wasd_mask, memory_order_acquire);
+            uint32_t mask = atomic_load_explicit(&g_engine.mailbox.wasd_mask[id], memory_order_acquire);
             uint32_t new_mask;
             do {
                 new_mask = (action == GLFW_PRESS) ? (mask | bit) : (mask & ~bit);
-            } while(!atomic_compare_exchange_weak_explicit(&g_engine.mailbox.wasd_mask, &mask, new_mask, memory_order_release, memory_order_relaxed));
+            } while(!atomic_compare_exchange_weak_explicit(&g_engine.mailbox.wasd_mask[id], &mask, new_mask, memory_order_release, memory_order_relaxed));
         }
     }
+
     if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS) {
-        // Instantly trigger shutdown, no mouse-capture gatekeeping needed
-        atomic_store_explicit(&g_engine.mailbox.last_key_pressed, GLFW_KEY_ESCAPE, memory_order_release);
+        // Instantly trigger shutdown
+        atomic_store_explicit(&g_engine.mailbox.last_key_pressed[id], GLFW_KEY_ESCAPE, memory_order_release);
     }
+
     if (key == GLFW_KEY_SPACE) {
         // 1 means pressed or held, 0 means released
-        atomic_store_explicit(&g_engine.mailbox.key_space, (action != GLFW_RELEASE) ? 1 : 0, memory_order_release);
+        atomic_store_explicit(&g_engine.mailbox.key_space[id], (action != GLFW_RELEASE) ? 1 : 0, memory_order_release);
     }
+
     // === F11 NATIVE FULLSCREEN TOGGLE ===
     if (key == GLFW_KEY_F11 && action == GLFW_PRESS) {
-        if (!s_is_fullscreen) {
-            // 1. Save the exact window position and size before maximizing
-            glfwGetWindowPos(window, &s_win_x, &s_win_y);
-            glfwGetWindowSize(window, &s_win_w, &s_win_h);
+        if (!s_is_fullscreen[id]) {
+            glfwGetWindowPos(window, &s_win_x[id], &s_win_y[id]);
+            glfwGetWindowSize(window, &s_win_w[id], &s_win_h[id]);
 
-            // 2. Get the primary monitor and its native resolution
             GLFWmonitor* monitor = glfwGetPrimaryMonitor();
             const GLFWvidmode* mode = glfwGetVideoMode(monitor);
 
-            // 3. Switch to borderless fullscreen on that monitor
             glfwSetWindowMonitor(window, monitor, 0, 0, mode->width, mode->height, mode->refreshRate);
-            s_is_fullscreen = true;
-            printf("[C-CORE] Native Fullscreen Engaged (%dx%d @ %dHz)\n", mode->width, mode->height, mode->refreshRate);
+            s_is_fullscreen[id] = true;
+            printf("[C-CORE] Tenant %d: Native Fullscreen Engaged (%dx%d @ %dHz)\n", id, mode->width, mode->height, mode->refreshRate);
         } else {
-            // Restore back to the exact windowed state
-            glfwSetWindowMonitor(window, NULL, s_win_x, s_win_y, s_win_w, s_win_h, 0);
-            s_is_fullscreen = false;
-            printf("[C-CORE] Windowed Mode Restored\n");
+            glfwSetWindowMonitor(window, NULL, s_win_x[id], s_win_y[id], s_win_w[id], s_win_h[id], 0);
+            s_is_fullscreen[id] = false;
+            printf("[C-CORE] Tenant %d: Windowed Mode Restored\n", id);
         }
     }
+
     // THE MOUSE RELAY TOGGLE
     if (key == GLFW_KEY_F10 && action == GLFW_PRESS) {
-        int is_cap = atomic_load_explicit(&g_engine.mailbox.mouse_captured, memory_order_acquire);
+        int is_cap = atomic_load_explicit(&g_engine.mailbox.mouse_captured[id], memory_order_acquire);
         is_cap = !is_cap; // Flip the state
-        atomic_store_explicit(&g_engine.mailbox.mouse_captured, is_cap, memory_order_release);
+        atomic_store_explicit(&g_engine.mailbox.mouse_captured[id], is_cap, memory_order_release);
 
         if (is_cap) {
             glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_CAPTURED);
-            printf("[C-CORE] Mouse Clamped to Window (F10)\n");
+            printf("[C-CORE] Tenant %d: Mouse Clamped to Window (F10)\n", id);
         } else {
             glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
-            printf("[C-CORE] Mouse Freed (F10)\n");
+            printf("[C-CORE] Tenant %d: Mouse Freed (F10)\n", id);
         }
     }
+
     if (action == GLFW_PRESS) {
         if (key == GLFW_KEY_1 || key == GLFW_KEY_2 || key == GLFW_KEY_3 || key == GLFW_KEY_4 || key == GLFW_KEY_F5 || key == GLFW_KEY_ENTER || key == GLFW_KEY_KP_ENTER) {
-            atomic_store_explicit(&g_engine.mailbox.last_key_pressed, key, memory_order_release);
+            atomic_store_explicit(&g_engine.mailbox.last_key_pressed[id], key, memory_order_release);
         }
     }
 }
@@ -298,33 +327,59 @@ EXPORT void vx_sys_eject_validation(void* instance) {
     }
 }
 
-EXPORT uint32_t vx_input_wasd() { return atomic_load_explicit(&g_engine.mailbox.wasd_mask, memory_order_acquire); }
-EXPORT float vx_input_mouse_dx() {
+EXPORT uint32_t vx_input_wasd(int win_id) {
+    if (win_id < 0 || win_id >= MAX_WINDOWS) return 0;
+    return atomic_load_explicit(&g_engine.mailbox.wasd_mask[win_id], memory_order_acquire);
+}
+EXPORT float vx_input_mouse_dx(int win_id) {
+    if (win_id < 0 || win_id >= MAX_WINDOWS) return 0.0f;
+
     while (atomic_flag_test_and_set_explicit(&s_mouse_lock, memory_order_acquire));
-    float val = atomic_exchange_explicit(&g_engine.mailbox.mouse_dx, 0.0f, memory_order_relaxed);
+    float val = atomic_exchange_explicit(&g_engine.mailbox.mouse_dx[win_id], 0.0f, memory_order_relaxed);
     atomic_flag_clear_explicit(&s_mouse_lock, memory_order_release);
+
     return val;
 }
-EXPORT float vx_input_mouse_dy() {
+
+EXPORT float vx_input_mouse_dy(int win_id) {
+    if (win_id < 0 || win_id >= MAX_WINDOWS) return 0.0f;
+
     while (atomic_flag_test_and_set_explicit(&s_mouse_lock, memory_order_acquire));
-    float val = atomic_exchange_explicit(&g_engine.mailbox.mouse_dy, 0.0f, memory_order_relaxed);
+    float val = atomic_exchange_explicit(&g_engine.mailbox.mouse_dy[win_id], 0.0f, memory_order_relaxed);
     atomic_flag_clear_explicit(&s_mouse_lock, memory_order_release);
+
     return val;
 }
-EXPORT int vx_sys_resize_flag() { return atomic_exchange_explicit(&g_engine.mailbox.window_resized, 0, memory_order_acquire); }
-EXPORT void vx_sys_window_size(int* w, int* h) {
-    *w = atomic_load_explicit(&g_engine.mailbox.win_w, memory_order_acquire);
-    *h = atomic_load_explicit(&g_engine.mailbox.win_h, memory_order_acquire);
+EXPORT int vx_sys_resize_flag(int win_id) {
+    if (win_id < 0 || win_id >= MAX_WINDOWS) return 0;
+    return atomic_exchange_explicit(&g_engine.mailbox.window_resized[win_id], 0, memory_order_acquire);
+}
+
+EXPORT void vx_sys_window_size(int win_id, int* w, int* h) {
+    if (win_id < 0 || win_id >= MAX_WINDOWS) {
+        *w = 0; *h = 0;
+        return;
+    }
+    *w = atomic_load_explicit(&g_engine.mailbox.win_w[win_id], memory_order_acquire);
+    *h = atomic_load_explicit(&g_engine.mailbox.win_h[win_id], memory_order_acquire);
 }
 
 void glfw_framebuffer_size_callback(GLFWwindow* window, int width, int height) {
     if (width == 0 || height == 0) return;
-    atomic_store_explicit(&g_engine.mailbox.win_w, width, memory_order_release);
-    atomic_store_explicit(&g_engine.mailbox.win_h, height, memory_order_release);
-    atomic_store_explicit(&g_engine.mailbox.window_resized, 1, memory_order_release);
+
+    // Extract the target tenant
+    int id = (int)(intptr_t)glfwGetWindowUserPointer(window);
+    if (id < 0 || id >= MAX_WINDOWS) return;
+
+    atomic_store_explicit(&g_engine.mailbox.win_w[id], width, memory_order_release);
+    atomic_store_explicit(&g_engine.mailbox.win_h[id], height, memory_order_release);
+
+    // Flag the render thread / Lua that this specific WSI needs a rebuild
+    atomic_store_explicit(&g_engine.mailbox.window_resized[id], 1, memory_order_release);
 }
-EXPORT int vx_input_spacebar() {
-    return atomic_load_explicit(&g_engine.mailbox.key_space, memory_order_acquire);
+EXPORT int vx_input_spacebar(int win_id) {
+    if (win_id < 0 || win_id >= MAX_WINDOWS) return 0;
+    return atomic_load_explicit(&g_engine.mailbox.key_space[win_id], memory_order_acquire);
 }
 
 
@@ -342,9 +397,35 @@ typedef struct {
 // INSTANTIATE WITH MASK
 static RenderRing g_ring = { .ready_idx = -1, .locked_mask = 0 };
 
-static RenderThreadInit g_wsi;
-static atomic_int g_wsi_state = 0;   // 0 = Dead/Updating, 1 = Ready to Render
-static atomic_int g_render_busy = 0; // 1 = Render Thread is inside a Vulkan execution block
+#define MAX_WINDOWS 4
+
+// The Multi-Tenant WSI Registry
+static RenderThreadInit g_window_wsi[MAX_WINDOWS];
+
+// The Double-Gate Locks (Scaled to arrays)
+static atomic_int g_wsi_state[MAX_WINDOWS] = {0, 0, 0, 0};   // 0 = Dead/Updating, 1 = Ready to Render
+static atomic_int g_render_busy[MAX_WINDOWS] = {0, 0, 0, 0}; // 1 = Render Thread is inside a Vulkan execution block
+
+EXPORT void vx_stream_register_window(int win_id, RenderThreadInit* wsi) {
+    if (win_id < 0 || win_id >= MAX_WINDOWS) return;
+
+    // 1. Lock the specific WSI slot
+    atomic_store_explicit(&g_wsi_state[win_id], 0, memory_order_release);
+
+    // 2. Wait for the Render Thread to exit this specific window's Vulkan block
+    while (atomic_load_explicit(&g_render_busy[win_id], memory_order_acquire)) {
+        SLEEP_MS(1);
+    }
+
+    // 3. Safe to overwrite
+    g_window_wsi[win_id] = *wsi;
+
+    // 4. Open the gate
+    atomic_store_explicit(&g_wsi_state[win_id], 1, memory_order_release);
+
+    // Note: IPC Ring Buffer resetting is now handled per-tenant inside the Render Thread,
+    // or you can safely flush the locked_mask here if resetting the whole simulation.
+}
 
 static vmath_thread_t g_render_thread;
 static atomic_int g_render_thread_active = 0;
@@ -667,144 +748,151 @@ EXPORT void vx_record_commands(VkCommandBuffer cmd, RenderPacket* p, DrawCommand
 }
 
 THREAD_FUNC render_thread_loop(void* arg) {
-    printf("[C-CORE] Async Render Thread Online.\n");
+    printf("[C-CORE] Async Render Multiplexer Online.\n");
 
-    // 1. C-Owned Command Pool Setup
+    // 1. Shared Command Pool Setup (Assuming a shared logical device)
+    // We use WSI index 0's device. For true multi-device support, pool creation must be per-device.
     VkCommandPool cmd_pool;
     VkCommandPoolCreateInfo pool_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
         .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-        .queueFamilyIndex = 0 // Assuming Graphics queue index is 0 in your setup
+        .queueFamilyIndex = 0
     };
-    // Replace the local pool declaration
-    vkCreateCommandPool(g_wsi.device, &pool_info, NULL, &g_render_cmd_pool);
+    vkCreateCommandPool(g_window_wsi[0].device, &pool_info, NULL, &g_render_cmd_pool);
 
-    VkCommandBuffer cmd_buffers[3];
-    VkCommandBufferAllocateInfo alloc_info = {
-        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-        .commandPool = g_render_cmd_pool, // Use the global
-        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandBufferCount = 3
-    };
-    vkAllocateCommandBuffers(g_wsi.device, &alloc_info, cmd_buffers);
+    // 2. AVOID THE LAZY ALLOCATION TRAP: Pre-allocate the 2D Command Buffer Array!
+    VkCommandBuffer cmd_buffers[MAX_WINDOWS][3];
+    uint32_t t_frame[MAX_WINDOWS] = {0};             // current_frame per tenant
+    int active_ring_slots[MAX_WINDOWS][3];           // IPC tracking per tenant
 
-    uint32_t current_frame = 0;
-    int local_read = -1;
-    int active_ring_slots[3] = {-1, -1, -1}; // NEW: Tracks VRAM in flight
+    for (int wid = 0; wid < MAX_WINDOWS; wid++) {
+        for (int f = 0; f < 3; f++) active_ring_slots[wid][f] = -1;
 
-    // Added array to map Swapchain Image Indices to Fences
-    VkFence image_fences[10];
-    for (int i = 0; i < 10; i++) {
-        image_fences[i] = VK_NULL_HANDLE;
+        VkCommandBufferAllocateInfo alloc_info = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .commandPool = g_render_cmd_pool,
+            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            .commandBufferCount = 3
+        };
+        // Safe pre-allocation at thread boot
+        vkAllocateCommandBuffers(g_window_wsi[0].device, &alloc_info, cmd_buffers[wid]);
     }
 
-    // Typecast Vulkan WSI Pointers
-    PFN_vkWaitForFences pfnWait = (PFN_vkWaitForFences)g_wsi.vkWaitForFences;
-    PFN_vkAcquireNextImageKHR pfnAcquire = (PFN_vkAcquireNextImageKHR)g_wsi.vkAcquireNextImageKHR;
-    PFN_vkResetFences pfnReset = (PFN_vkResetFences)g_wsi.vkResetFences;
-    PFN_vkQueueSubmit pfnSubmit = (PFN_vkQueueSubmit)g_wsi.vkQueueSubmit;
-    PFN_vkQueuePresentKHR pfnPresent = (PFN_vkQueuePresentKHR)g_wsi.vkQueuePresentKHR;
+    int local_read = -1;
 
     while (atomic_load_explicit(&g_render_thread_active, memory_order_acquire) &&
            atomic_load_explicit(&g_engine.mailbox.is_running, memory_order_acquire)) {
 
-        // Check if WSI is alive before doing anything
-        if (atomic_load_explicit(&g_wsi_state, memory_order_acquire) == 0) {
+        // 1. Grab the latest frame from Lua
+        int ready = atomic_load_explicit(&g_ring.ready_idx, memory_order_acquire);
+        if (ready == -1 || ready == local_read) {
             SLEEP_MS(1);
             continue;
         }
 
-        int ready = atomic_load_explicit(&g_ring.ready_idx, memory_order_acquire);
-        if (ready == -1 || ready == local_read) {
-             SLEEP_MS(1);
-            continue;
-        }
-
-        // Enter Vulkan Execution Block
-        atomic_store_explicit(&g_render_busy, 1, memory_order_release);
-
-        // Sanity check: Did Lua trigger an update while we were setting busy?
-        if (atomic_load_explicit(&g_wsi_state, memory_order_acquire) == 0) {
-            atomic_store_explicit(&g_render_busy, 0, memory_order_release);
-            continue;
-        }
-
         local_read = ready;
+        RenderPacket* p = &g_ring.packets[local_read];
+        int wid = p->target_window_id; // Added to shared_structs.h Phase 1
 
-        // 2. Safe to sleep on the GPU WSI
-        pfnWait(g_wsi.device, 1, &g_wsi.in_flight[current_frame], VK_TRUE, UINT64_MAX);
+        // 2. THE HEADLESS DROP CHECK (Crucial for deterministic networking)
+        if (wid < 0 || wid >= MAX_WINDOWS || atomic_load_explicit(&g_wsi_state[wid], memory_order_acquire) == 0) {
+            // Window is dead or resizing. Unlock the slot IMMEDIATELY so Lua doesn't starve!
+            atomic_fetch_and_explicit(&g_ring.locked_mask, ~(1 << local_read), memory_order_release);
+            continue;
+        }
 
-        // 3. UNLOCK: The GPU has finished drawing the oldest frame. Give the slot back to Lua.
-        int finished_slot = active_ring_slots[current_frame];
+        // 3. ENTER VULKAN EXECUTION BLOCK (The Double-Gate Lock)
+        atomic_store_explicit(&g_render_busy[wid], 1, memory_order_release);
+
+        // Sanity check: Did Lua invalidate the window while we were locking?
+        if (atomic_load_explicit(&g_wsi_state[wid], memory_order_acquire) == 0) {
+            atomic_store_explicit(&g_render_busy[wid], 0, memory_order_release); // Release Seal
+            atomic_fetch_and_explicit(&g_ring.locked_mask, ~(1 << local_read), memory_order_release); // Release IPC
+            continue;
+        }
+
+        // --- SAFE VULKAN EXECUTION ZONE ---
+
+        // Multiplex Pointers
+        RenderThreadInit* win_wsi = &g_window_wsi[wid];
+        uint32_t current_frame = t_frame[wid];
+        VkCommandBuffer cmd = cmd_buffers[wid][current_frame];
+
+        // Safely sleep on the specific tenant's GPU Fence
+        PFN_vkWaitForFences pfnWait = (PFN_vkWaitForFences)win_wsi->vkWaitForFences;
+        pfnWait(win_wsi->device, 1, &win_wsi->in_flight[current_frame], VK_TRUE, UINT64_MAX);
+
+        // IPC Unlock: GPU finished the oldest frame for THIS window
+        int finished_slot = active_ring_slots[wid][current_frame];
         if (finished_slot != -1 && finished_slot != local_read) {
             atomic_fetch_and_explicit(&g_ring.locked_mask, ~(1 << finished_slot), memory_order_release);
         }
+        active_ring_slots[wid][current_frame] = local_read;
 
-        active_ring_slots[current_frame] = local_read;
-
-        // 4. Safely read the sealed packet
-        RenderPacket* p = &g_ring.packets[local_read];
-        VkCommandBuffer cmd = cmd_buffers[current_frame];
-
-        // 1. Wait on CPU ring buffer fence for THIS command buffer slot
-        pfnWait(g_wsi.device, 1, &g_wsi.in_flight[current_frame], VK_TRUE, UINT64_MAX);
-
-        // 2. Acquire Image (Signaling the CPU's current_frame semaphore)
+        // Acquire Image
+        PFN_vkAcquireNextImageKHR pfnAcquire = (PFN_vkAcquireNextImageKHR)win_wsi->vkAcquireNextImageKHR;
         uint32_t img_idx;
-        VkResult res = pfnAcquire(g_wsi.device, g_wsi.swapchain, UINT64_MAX, g_wsi.image_available[current_frame], VK_NULL_HANDLE, &img_idx);
+        VkResult res = pfnAcquire(win_wsi->device, win_wsi->swapchain, UINT64_MAX,
+                                  win_wsi->image_available[current_frame], VK_NULL_HANDLE, &img_idx);
 
         if (res == VK_ERROR_OUT_OF_DATE_KHR) {
-            atomic_store_explicit(&g_engine.mailbox.window_resized, 1, memory_order_release);
-            // CRITICAL: You MUST release the lock before continuing!
-            atomic_store_explicit(&g_render_busy, 0, memory_order_release);
+            atomic_store_explicit(&g_engine.mailbox.window_resized[wid], 1, memory_order_release);
+
+            // CRITICAL RELEASE: Drop the lock before backing out!
+            atomic_store_explicit(&g_render_busy[wid], 0, memory_order_release);
             SLEEP_MS(10);
             continue;
         }
 
-        // 3. Reset the fence for this slot
-        pfnReset(g_wsi.device, 1, &g_wsi.in_flight[current_frame]);
+        // Record Commands
+        PFN_vkResetFences pfnReset = (PFN_vkResetFences)win_wsi->vkResetFences;
+        pfnReset(win_wsi->device, 1, &win_wsi->in_flight[current_frame]);
 
-        p->swapchain_image = g_wsi.swapchain_images[img_idx];
-        p->swapchain_view = g_wsi.swapchain_views[img_idx];
+        p->swapchain_image = win_wsi->swapchain_images[img_idx];
+        p->swapchain_view = win_wsi->swapchain_views[img_idx];
 
         vkResetCommandBuffer(cmd, 0);
-        vx_record_commands(cmd, p, p->draw_queue, p->draw_count, (PFN_vkCmdBeginRenderingKHR)g_wsi.pfnBegin, (PFN_vkCmdEndRenderingKHR)g_wsi.pfnEnd);
+        vx_record_commands(cmd, p, p->draw_queue, p->draw_count,
+                           (PFN_vkCmdBeginRenderingKHR)win_wsi->pfnBegin,
+                           (PFN_vkCmdEndRenderingKHR)win_wsi->pfnEnd);
 
+        // Submit
         VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-
-        // 4. Submit (Wait on CPU frame semaphore, Signal the GPU IMAGE semaphore)
         VkSubmitInfo submitInfo = {
             .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
             .waitSemaphoreCount = 1,
-            .pWaitSemaphores = &g_wsi.image_available[current_frame],
+            .pWaitSemaphores = &win_wsi->image_available[current_frame],
             .pWaitDstStageMask = &waitStage,
             .commandBufferCount = 1,
             .pCommandBuffers = &cmd,
             .signalSemaphoreCount = 1,
-            .pSignalSemaphores = &g_wsi.render_finished[img_idx] // <-- TIED TO HARDWARE IMAGE
+            .pSignalSemaphores = &win_wsi->render_finished[img_idx]
         };
-        pfnSubmit(g_wsi.queue, 1, &submitInfo, g_wsi.in_flight[current_frame]);
 
-        // 5. Present (Wait on the GPU IMAGE semaphore)
+        PFN_vkQueueSubmit pfnSubmit = (PFN_vkQueueSubmit)win_wsi->vkQueueSubmit;
+        pfnSubmit(win_wsi->queue, 1, &submitInfo, win_wsi->in_flight[current_frame]);
+
+        // Present
         VkPresentInfoKHR presentInfo = {
             .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
             .waitSemaphoreCount = 1,
-            .pWaitSemaphores = &g_wsi.render_finished[img_idx], // <-- TIED TO HARDWARE IMAGE
+            .pWaitSemaphores = &win_wsi->render_finished[img_idx],
             .swapchainCount = 1,
-            .pSwapchains = &g_wsi.swapchain,
+            .pSwapchains = &win_wsi->swapchain,
             .pImageIndices = &img_idx
         };
-        pfnPresent(g_wsi.queue, &presentInfo);
+
+        PFN_vkQueuePresentKHR pfnPresent = (PFN_vkQueuePresentKHR)win_wsi->vkQueuePresentKHR;
+        pfnPresent(win_wsi->queue, &presentInfo);
 
         // EXIT VULKAN EXECUTION BLOCK
-        atomic_store_explicit(&g_render_busy, 0, memory_order_release);
+        atomic_store_explicit(&g_render_busy[wid], 0, memory_order_release);
 
-        // Keep CPU Ring Buffer locked to 3 slots
-        current_frame = (current_frame + 1) % 3;
-
+        // Advance this tenant's frame clock
+        t_frame[wid] = (current_frame + 1) % 3;
     }
 
-    printf("[C-CORE] Async Render Thread gracefully terminated and pool destroyed.\n");
+    printf("[C-CORE] Async Render Multiplexer gracefully terminated.\n");
     return NULL;
 }
 
@@ -844,6 +932,7 @@ void vx_init_mailbox() {
     atomic_init(&g_engine.mailbox.ready_index, 0);
     atomic_init(&g_engine.mailbox.is_running, 1);
     atomic_init(&g_engine.mailbox.lua_finished, 0);
+    atomic_init(&g_engine.mailbox.active_window, 0);
     atomic_init(&g_engine.mailbox.vk_instance, NULL);
     atomic_init(&g_engine.mailbox.vk_surface, NULL);
     atomic_init(&g_engine.mailbox.mouse_x, 0.0f);
