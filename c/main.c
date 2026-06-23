@@ -475,35 +475,41 @@ EXPORT int vx_transfer_request(uint64_t src, uint64_t dst, uint64_t size, uint64
 THREAD_FUNC transfer_thread_loop(void* arg) {
     printf("[C-CORE] Async Transfer Overlord Online.\n");
 
+    // [SAFETY] Wait for the primary device to be initialized before creating pools
+    // Prevents a race condition if the transfer thread boots before Window 0 is created.
+    while (g_window_wsi[0].device == NULL && atomic_load_explicit(&g_engine.mailbox.is_running, memory_order_acquire)) {
+        SLEEP_MS(1);
+    }
+    if (!atomic_load_explicit(&g_engine.mailbox.is_running, memory_order_acquire)) return NULL;
+
     VkCommandPool cmd_pool;
     VkCommandPoolCreateInfo pool_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
         .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
         .queueFamilyIndex = g_transfer_family_idx // Strict Domain Isolation
     };
-    // Replace the local pool declaration
-    vkCreateCommandPool(g_wsi.device, &pool_info, NULL, &g_transfer_cmd_pool);
+    vkCreateCommandPool(g_window_wsi[0].device, &pool_info, NULL, &g_transfer_cmd_pool);
 
     VkCommandBuffer cmd;
     VkCommandBufferAllocateInfo alloc_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-        .commandPool = g_transfer_cmd_pool, // Use the global
+        .commandPool = g_transfer_cmd_pool,
         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
         .commandBufferCount = 1
     };
-    vkAllocateCommandBuffers(g_wsi.device, &alloc_info, &cmd);
+    vkAllocateCommandBuffers(g_window_wsi[0].device, &alloc_info, &cmd);
 
-    PFN_vkQueueSubmit pfnSubmit = (PFN_vkQueueSubmit)g_wsi.vkQueueSubmit;
+    PFN_vkQueueSubmit pfnSubmit = (PFN_vkQueueSubmit)g_window_wsi[0].vkQueueSubmit;
 
-    // [NEW] Allocate a dedicated fence for the DMA transfer
     VkFence transfer_fence;
     VkFenceCreateInfo fence_info = {
         .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-        .flags = 1 // VK_FENCE_CREATE_SIGNALED_BIT - Crucial for the first loop!
+        .flags = 1 // VK_FENCE_CREATE_SIGNALED_BIT
     };
-    vkCreateFence(g_wsi.device, &fence_info, NULL, &transfer_fence);
-    PFN_vkWaitForFences pfnWait = (PFN_vkWaitForFences)g_wsi.vkWaitForFences;
-    PFN_vkResetFences pfnReset = (PFN_vkResetFences)g_wsi.vkResetFences;
+    vkCreateFence(g_window_wsi[0].device, &fence_info, NULL, &transfer_fence);
+
+    PFN_vkWaitForFences pfnWait = (PFN_vkWaitForFences)g_window_wsi[0].vkWaitForFences;
+    PFN_vkResetFences pfnReset = (PFN_vkResetFences)g_window_wsi[0].vkResetFences;
 
     while (atomic_load_explicit(&g_transfer_thread_active, memory_order_acquire) &&
            atomic_load_explicit(&g_engine.mailbox.is_running, memory_order_acquire)) {
@@ -513,21 +519,18 @@ THREAD_FUNC transfer_thread_loop(void* arg) {
             if (atomic_load_explicit(&g_transfer_ring[i].status, memory_order_acquire) == 2) {
                 TransferJob* job = &g_transfer_ring[i];
 
-                // [NEW] Ensure the GPU is entirely done with the PREVIOUS transfer before resetting
-                pfnWait(g_wsi.device, 1, &transfer_fence, VK_TRUE, UINT64_MAX);
-                pfnReset(g_wsi.device, 1, &transfer_fence);
+                pfnWait(g_window_wsi[0].device, 1, &transfer_fence, VK_TRUE, UINT64_MAX);
+                pfnReset(g_window_wsi[0].device, 1, &transfer_fence);
 
                 vkResetCommandBuffer(cmd, 0);
                 VkCommandBufferBeginInfo beginInfo = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
                 vkBeginCommandBuffer(cmd, &beginInfo);
 
-                // Hardware DMA Copy Command
                 VkBufferCopy copyRegion = { .srcOffset = 0, .dstOffset = 0, .size = job->size };
                 vkCmdCopyBuffer(cmd, (VkBuffer)job->src_buffer, (VkBuffer)job->dst_buffer, 1, &copyRegion);
 
                 vkEndCommandBuffer(cmd);
 
-                // Vulkan 1.2 Timeline Linkage
                 VkTimelineSemaphoreSubmitInfo timelineInfo = {
                     .sType = 1000207003, // VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO
                     .signalSemaphoreValueCount = 1,
@@ -543,9 +546,8 @@ THREAD_FUNC transfer_thread_loop(void* arg) {
                     .pSignalSemaphores = (VkSemaphore*)&job->timeline_sem
                 };
 
-                // Submit directly to the dedicated Transfer Queue!
                 printf("[C-CORE] Submitting DMA Transfer. Timeline Signal Value: %llu\n", (unsigned long long)job->signal_val);
-                pfnSubmit(g_wsi.transfer_queue, 1, &submitInfo, transfer_fence);
+                pfnSubmit(g_window_wsi[0].transfer_queue, 1, &submitInfo, transfer_fence);
 
                 atomic_store_explicit(&job->status, 0, memory_order_release);
                 worked = true;
@@ -554,8 +556,7 @@ THREAD_FUNC transfer_thread_loop(void* arg) {
         if (!worked) SLEEP_MS(1);
     }
 
-    // [NEW] Cleanup the fence on thread death
-    vkDestroyFence(g_wsi.device, transfer_fence, NULL);
+    vkDestroyFence(g_window_wsi[0].device, transfer_fence, NULL);
     printf("[C-CORE] Async Transfer Thread gracefully terminated.\n");
     return NULL;
 }
@@ -669,12 +670,12 @@ EXPORT void vx_record_commands(VkCommandBuffer cmd, RenderPacket* p, DrawCommand
     VkBuffer ibo = (VkBuffer)p->index_buffer;
     vkCmdBindIndexBuffer(cmd, ibo, 0, VK_INDEX_TYPE_UINT32);
 
-    PFN_vkCmdSetCullModeEXT vkCmdSetCullModeEXT = (PFN_vkCmdSetCullModeEXT)g_wsi.pfnSetCullMode;
-    PFN_vkCmdSetFrontFaceEXT vkCmdSetFrontFaceEXT = (PFN_vkCmdSetFrontFaceEXT)g_wsi.pfnSetFrontFace;
-    PFN_vkCmdSetPrimitiveTopologyEXT vkCmdSetPrimitiveTopologyEXT = (PFN_vkCmdSetPrimitiveTopologyEXT)g_wsi.pfnSetPrimitiveTopology;
-    PFN_vkCmdSetDepthTestEnableEXT vkCmdSetDepthTestEnableEXT = (PFN_vkCmdSetDepthTestEnableEXT)g_wsi.pfnSetDepthTestEnable;
-    PFN_vkCmdSetDepthWriteEnableEXT vkCmdSetDepthWriteEnableEXT = (PFN_vkCmdSetDepthWriteEnableEXT)g_wsi.pfnSetDepthWriteEnable;
-    PFN_vkCmdSetDepthCompareOpEXT vkCmdSetDepthCompareOpEXT = (PFN_vkCmdSetDepthCompareOpEXT)g_wsi.pfnSetDepthCompareOp;
+    PFN_vkCmdSetCullModeEXT vkCmdSetCullModeEXT = (PFN_vkCmdSetCullModeEXT)win_wsi->pfnSetCullMode;
+    PFN_vkCmdSetFrontFaceEXT vkCmdSetFrontFaceEXT = (PFN_vkCmdSetFrontFaceEXT)win_wsi->pfnSetFrontFace;
+    PFN_vkCmdSetPrimitiveTopologyEXT vkCmdSetPrimitiveTopologyEXT = (PFN_vkCmdSetPrimitiveTopologyEXT)win_wsi->pfnSetPrimitiveTopology;
+    PFN_vkCmdSetDepthTestEnableEXT vkCmdSetDepthTestEnableEXT = (PFN_vkCmdSetDepthTestEnableEXT)win_wsi->pfnSetDepthTestEnable;
+    PFN_vkCmdSetDepthWriteEnableEXT vkCmdSetDepthWriteEnableEXT = (PFN_vkCmdSetDepthWriteEnableEXT)win_wsi->pfnSetDepthWriteEnable;
+    PFN_vkCmdSetDepthCompareOpEXT vkCmdSetDepthCompareOpEXT = (PFN_vkCmdSetDepthCompareOpEXT)win_wsi->pfnSetDepthCompareOp;
 
     // 4. Data-Oriented Queue Execution
     uint64_t current_pipeline = 0;
@@ -843,9 +844,7 @@ THREAD_FUNC render_thread_loop(void* arg) {
         p->swapchain_view = win_wsi->swapchain_views[img_idx];
 
         vkResetCommandBuffer(cmd, 0);
-        vx_record_commands(cmd, p, p->draw_queue, p->draw_count,
-                           (PFN_vkCmdBeginRenderingKHR)win_wsi->pfnBegin,
-                           (PFN_vkCmdEndRenderingKHR)win_wsi->pfnEnd);
+        vx_record_commands(cmd, p, p->draw_queue, p->draw_count, win_wsi);
 
         // Submit
         VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
