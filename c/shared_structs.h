@@ -96,7 +96,7 @@ typedef struct  {
 typedef struct __attribute__((aligned(64))) {
     DrawCommand* draw_queue;
     uint32_t draw_count;
-    uint8_t _pad_auto_0[4];
+    uint32_t target_window_id;
     uint64_t gfx_layout;
     uint64_t vertex_buffer;
     uint64_t index_buffer;
