@@ -80,7 +80,7 @@ print("--- AI SNAPSHOT ---")
 
 local order = {
     -- [ ENTRY POINTS ]
---    "main.lua",
+
 --    "lua/config_net.lua",
 --    "lua/config_sim.lua",
 --    "lua/config_gfx.lua",
@@ -91,10 +91,12 @@ local order = {
     -- [ C-CORE ]
 --    "c/vx_net.c",
 --    "c/shared_structs.h",
-    "c/main.c",
+--    "c/main.c",
     -- [ LUA ENGINE MODULES ]
 --    "lua/registry_vk.lua",
---    "lua/sequence.lua",
+    "lua/render_queue.lua",
+    "lua/sequence.lua",
+    "main.lua",
 --    "lua/pipeline_manifest.lua",
 --    "lua/vulkan_core.lua",
 --    "lua/swapchain.lua",
@@ -102,7 +104,7 @@ local order = {
 --    "lua/graphics_pipeline.lua",
 --    "lua/compute_pipeline.lua",
 --    "lua/renderer.lua",
---    "lua/renderer.lua",
+
 --    "lua/memory.lua",
 --    "lua/vmath.lua",
 

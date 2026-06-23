@@ -625,6 +625,10 @@ EXPORT void vx_record_commands(VkCommandBuffer cmd, RenderPacket* p, DrawCommand
         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
         0, 0, NULL, 0, NULL, 2, preBarriers);
 
+    // --- THE FIX: Cast the opaque FFI pointers to callable Vulkan function pointers ---
+    PFN_vkCmdBeginRenderingKHR pfnBegin = (PFN_vkCmdBeginRenderingKHR)win_wsi->pfnBegin;
+    PFN_vkCmdEndRenderingKHR pfnEnd = (PFN_vkCmdEndRenderingKHR)win_wsi->pfnEnd;
+
     VkRenderingAttachmentInfoKHR colorAttachment = {0};
     colorAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
     colorAttachment.imageView = (VkImageView)p->swapchain_view;
@@ -654,7 +658,8 @@ EXPORT void vx_record_commands(VkCommandBuffer cmd, RenderPacket* p, DrawCommand
         .pDepthAttachment = &depthAttachment
     };
 
-    win_wsi->pfnBegin(cmd, &renderInfo);
+    // Now call the local function pointer!
+    pfnBegin(cmd, &renderInfo);
 
     // 3. Global Graphics State Setup
     VkViewport viewport = {0.0f, 0.0f, (float)p->width, (float)p->height, 0.0f, 1.0f};
@@ -723,7 +728,8 @@ EXPORT void vx_record_commands(VkCommandBuffer cmd, RenderPacket* p, DrawCommand
         );
     }
 
-    win_wsi->pfnEnd(cmd);
+    // Call the end function pointer!
+    pfnEnd(cmd);
 
     // 5. Present Barrier
     VkImageMemoryBarrier presentBarrier = {
