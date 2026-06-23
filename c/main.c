@@ -54,32 +54,30 @@ static bool s_is_fullscreen = false;
 static int s_win_x = 0, s_win_y = 0;
 static int s_win_w = 1280, s_win_h = 720;
 
+#define MAX_WINDOWS 4
+
 typedef struct {
+    // --- GLOBAL ENGINE STATE (Singletons) ---
     alignas(64) _Atomic int ready_index;
     _Atomic int is_running;
     _Atomic int lua_finished;
-    _Atomic(void*) vk_instance;
-    _Atomic(void*) vk_surface;
-    _Atomic int glfw_cmd;
-    _Atomic int glfw_arg_w;
-    _Atomic int glfw_arg_h;
-    _Atomic int last_key_pressed;
-    _Atomic uint32_t wasd_mask;
-    _Atomic float mouse_dx;
-    _Atomic float mouse_dy;
 
-    _Atomic float mouse_x;  // Add this
-    _Atomic float mouse_y;  // Add this
-    _Atomic float click_x;  // NEW: Hardware-latched X
-    _Atomic float click_y;  // NEW: Hardware-latched Y
-    _Atomic int mouse_captured; // NEW: Track the F10 toggle state
-
-    _Atomic int window_resized;
-    _Atomic int win_w;
-    _Atomic int win_h;
-    _Atomic int mouse_left;
-    _Atomic int mouse_right;
-    _Atomic int key_space;
+    // --- MULTI-TENANT STATE (Arrays) ---
+    _Atomic(void*) vk_instance[MAX_WINDOWS];
+    _Atomic(void*) vk_surface[MAX_WINDOWS];
+    _Atomic int glfw_cmd[MAX_WINDOWS];
+    _Atomic int glfw_arg_w[MAX_WINDOWS];
+    _Atomic int glfw_arg_h[MAX_WINDOWS];
+    _Atomic int last_key_pressed[MAX_WINDOWS];
+    _Atomic uint32_t wasd_mask[MAX_WINDOWS];
+    _Atomic float mouse_dx[MAX_WINDOWS];
+    _Atomic float mouse_dy[MAX_WINDOWS];
+    _Atomic float mouse_x[MAX_WINDOWS];
+    _Atomic float mouse_y[MAX_WINDOWS];
+    _Atomic int mouse_captured[MAX_WINDOWS];
+    _Atomic int window_resized[MAX_WINDOWS];
+    _Atomic int win_w[MAX_WINDOWS];
+    _Atomic int win_h[MAX_WINDOWS];
 } IPC_Mailbox;
 
 typedef struct {
@@ -107,29 +105,41 @@ EXPORT int vx_input_last_key() {
     return atomic_exchange_explicit(&g_engine.mailbox.last_key_pressed, 0, memory_order_acquire);
 }
 
-double last_mx = 0.0, last_my = 0.0;
-bool first_mouse = true;
+// THIS NEEDS TO BE SLIGHTLY ADJUSTED
 static bool s_mouse_captured = false;
 
 static atomic_flag s_mouse_lock = ATOMIC_FLAG_INIT;
 
+double last_mx[MAX_WINDOWS] = {0.0};
+double last_my[MAX_WINDOWS] = {0.0};
+bool first_mouse[MAX_WINDOWS] = {true, true, true, true};
+
 void glfw_cursor_callback(GLFWwindow* window, double xpos, double ypos) {
-    atomic_store_explicit(&g_engine.mailbox.mouse_x, (float)xpos, memory_order_release);
-    atomic_store_explicit(&g_engine.mailbox.mouse_y, (float)ypos, memory_order_release);
+    int id = (int)(intptr_t)glfwGetWindowUserPointer(window);
+    if (id < 0 || id >= MAX_WINDOWS) return;
 
-    float dx = (float)(xpos - last_mx);
-    float dy = (float)(ypos - last_my);
-    last_mx = xpos;
-    last_my = ypos;
+    atomic_store_explicit(&g_engine.mailbox.mouse_x[id], (float)xpos, memory_order_release);
+    atomic_store_explicit(&g_engine.mailbox.mouse_y[id], (float)ypos, memory_order_release);
 
-    // Safely accumulate floats using a spinlock
+    if (first_mouse[id]) {
+        last_mx[id] = xpos;
+        last_my[id] = ypos;
+        first_mouse[id] = false;
+    }
+
+    float dx = (float)(xpos - last_mx[id]);
+    float dy = (float)(ypos - last_my[id]);
+    last_mx[id] = xpos;
+    last_my[id] = ypos;
+
+    // MULTI-TENANT SPINLOCK ACCUMULATION
     while (atomic_flag_test_and_set_explicit(&s_mouse_lock, memory_order_acquire));
 
-    float current_dx = atomic_load_explicit(&g_engine.mailbox.mouse_dx, memory_order_relaxed);
-    atomic_store_explicit(&g_engine.mailbox.mouse_dx, current_dx + dx, memory_order_relaxed);
+    float current_dx = atomic_load_explicit(&g_engine.mailbox.mouse_dx[id], memory_order_relaxed);
+    atomic_store_explicit(&g_engine.mailbox.mouse_dx[id], current_dx + dx, memory_order_relaxed);
 
-    float current_dy = atomic_load_explicit(&g_engine.mailbox.mouse_dy, memory_order_relaxed);
-    atomic_store_explicit(&g_engine.mailbox.mouse_dy, current_dy + dy, memory_order_relaxed);
+    float current_dy = atomic_load_explicit(&g_engine.mailbox.mouse_dy[id], memory_order_relaxed);
+    atomic_store_explicit(&g_engine.mailbox.mouse_dy[id], current_dy + dy, memory_order_relaxed);
 
     atomic_flag_clear_explicit(&s_mouse_lock, memory_order_release);
 }
