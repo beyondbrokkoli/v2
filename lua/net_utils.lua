@@ -55,7 +55,7 @@ local function http_get(url)
     return res
 end
 
-local function get_local_ip()
+function get_local_ip()
     local cmd = ""
     if jit.os == "Windows" then
         cmd = 'powershell -Command "(Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notlike \'127.*\' -and $_.IPAddress -notlike \'169.254.*\' } | Select-Object -First 1).IPAddress"'

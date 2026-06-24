@@ -27,7 +27,7 @@ local vmath = require("vmath")
 local manifest = require("pipeline_manifest")
 local net = require("network")
 local Fixed = require("fixed_math")
-
+local camera_mod = require("camera")
 local seq = require("sequence").init(app_ctx)
 local render_queue = require("render_queue").init(app_ctx)
 local Game = require("game_state").init(app_ctx)
