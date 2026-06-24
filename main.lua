@@ -2,6 +2,7 @@ io.stdout:setvbuf("no")
 package.path = "./lua/?.lua;" .. package.path
 
 local ffi = require("ffi")
+require("core_abi")
 local bit = require("bit")
 local json_util = require("json_util")
 local structs = require("structs")
