@@ -92,7 +92,7 @@ local order = {
 
     -- 3. LUA LEAVES (Zero Dependencies)
     -- Configs, low-level math, ABIs, headers
-    "lua/config_net.lua",
+--    "lua/config_net.lua",
 --    "lua/config_sim.lua",
     "lua/config_gfx.lua",
 --    "lua/fixed_math.lua",
