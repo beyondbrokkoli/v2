@@ -495,11 +495,15 @@ local function main()
                 camera_mod.get_matrices(editor_cam, 800, 600, ed_pc.viewProj, ed_inv_vp)
             end
 
-            -- 1. GAME TENANT
             local game_idx = EngineAPI.acquire_render_packet()
+
+            -- The OS is strangling the renderer (e.g., user is dragging the window)
+            -- The simulation MUST continue, but we drop the visual frame.
             if game_idx ~= -1 then
                 local alpha = ctx.accumulator / FIXED_DT
                 pc.dt = alpha
+
+                -- render_queues is now safely sized to 16
                 render_queue.PackFrame(game_idx, pc, ctx.rts_grid, vram_template, render_queues, active_render_mode, master_ptr, memory, gfx, desc, sc, ctx.total_tiles, ctx.net_identity, ctx.win_id)
 
                 if wants_hotswap then
@@ -512,6 +516,9 @@ local function main()
                 EngineAPI.commit_render_packet(game_idx)
                 pump_deletion_queue(vk_rt.vk, vk_rt, frame_count)
                 frame_count = frame_count + 1
+            else
+                -- Optional: Log starvation for debugging during development
+                -- print("[WARNING] Render Ring Saturated. Dropping frame to maintain sim lockstep.")
             end
 
             if editor_booted then
