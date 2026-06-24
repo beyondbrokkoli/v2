@@ -1,4 +1,3 @@
--- main.lua
 io.stdout:setvbuf("no")
 package.path = "./lua/?.lua;" .. package.path
 
@@ -33,12 +32,13 @@ local Pump = require("net_pump").init(app_ctx)
 local FSM = require("fsm_core").init(app_ctx, Game)
 
 local primary_win_id = 0
+local editor_win_id = 1
 
 local function sys_sleep(ms)
-    if jit.os == "Windows" then 
-        ffi.C.Sleep(ms) 
-    else 
-        ffi.C.usleep(ms * 1000) 
+    if jit.os == "Windows" then
+        ffi.C.Sleep(ms)
+    else
+        ffi.C.usleep(ms * 1000)
     end
 end
 
@@ -216,7 +216,7 @@ local function BootstrapNetworkTopology(local_port, my_local_ip)
         local scratch_handshake = ffi.new("LockstepPacket")
         local handshake_buffer = ffi.new("RxPacket[32]")
         local p2p_heard = {}
-        
+
         while (get_time_hires() - sync_start_time) < real_time_remaining do
             for peer_id, active in pairs(active_peers) do
                 if active and not p2p_established[peer_id] then
@@ -371,6 +371,58 @@ local function matrix_raycast_terrain(mouse_x, mouse_y, screen_w, screen_h, view
     return 65535
 end
 
+local function boot_editor_tenant(vk_rt, editor_win_id, width, height)
+    print(string.format("[UI BOOTSTRAP] Booting Editor Tenant %d...", editor_win_id))
+    WindowAPI.boot(editor_win_id, width, height)
+
+    local editor_surface = nil
+    while editor_surface == nil do
+        editor_surface = WindowAPI.get_surface(editor_win_id)
+        sys_sleep(10)
+    end
+    print("[UI BOOTSTRAP] Editor Surface Mapped.")
+
+    local swapchain = require("swapchain")
+    local renderer = require("renderer")
+
+    local ed_sc = swapchain.Init(vk_rt.vk, vk_rt, width, height, nil, editor_surface)
+    local ed_sync = renderer.InitSync(vk_rt.vk, vk_rt.device, app_ctx.cfg_gfx.cfg.frame_slots)
+
+    local wsi = ffi.new("RenderThreadInit")
+    wsi.device = vk_rt.device
+    wsi.queue = vk_rt.queue
+    wsi.swapchain = ed_sc.handle
+
+    for i = 0, ed_sc.imageCount - 1 do
+        wsi.swapchain_images[i] = ffi.cast("uint64_t", ed_sc.images[i])
+        wsi.swapchain_views[i]  = ffi.cast("uint64_t", ed_sc.imageViews[i])
+    end
+    for i = 0, app_ctx.cfg_gfx.cfg.frame_slots - 1 do
+        wsi.image_available[i] = ed_sync.imageAvailable[i]
+        wsi.render_finished[i] = ed_sync.renderFinished[i]
+        wsi.in_flight[i]       = ed_sync.inFlight[i]
+    end
+
+    wsi.vkWaitForFences = ffi.cast("void*", vk_rt.vk.vkGetDeviceProcAddr(vk_rt.device, "vkWaitForFences"))
+    wsi.vkAcquireNextImageKHR = ffi.cast("void*", vk_rt.vk.vkGetDeviceProcAddr(vk_rt.device, "vkAcquireNextImageKHR"))
+    wsi.vkResetFences = ffi.cast("void*", vk_rt.vk.vkGetDeviceProcAddr(vk_rt.device, "vkResetFences"))
+    wsi.vkQueueSubmit = ffi.cast("void*", vk_rt.vk.vkGetDeviceProcAddr(vk_rt.device, "vkQueueSubmit"))
+    wsi.vkQueuePresentKHR = ffi.cast("void*", vk_rt.vk.vkGetDeviceProcAddr(vk_rt.device, "vkQueuePresentKHR"))
+    wsi.pfnBegin = ffi.cast("void*", vk_rt.vk.vkGetDeviceProcAddr(vk_rt.device, "vkCmdBeginRenderingKHR"))
+    wsi.pfnEnd = ffi.cast("void*", vk_rt.vk.vkGetDeviceProcAddr(vk_rt.device, "vkCmdEndRenderingKHR"))
+    wsi.pfnSetCullMode = vk_rt.vk.vkGetDeviceProcAddr(vk_rt.device, "vkCmdSetCullModeEXT")
+    wsi.pfnSetFrontFace = vk_rt.vk.vkGetDeviceProcAddr(vk_rt.device, "vkCmdSetFrontFaceEXT")
+    wsi.pfnSetPrimitiveTopology = vk_rt.vk.vkGetDeviceProcAddr(vk_rt.device, "vkCmdSetPrimitiveTopologyEXT")
+    wsi.pfnSetDepthTestEnable = vk_rt.vk.vkGetDeviceProcAddr(vk_rt.device, "vkCmdSetDepthTestEnableEXT")
+    wsi.pfnSetDepthWriteEnable = vk_rt.vk.vkGetDeviceProcAddr(vk_rt.device, "vkCmdSetDepthWriteEnableEXT")
+    wsi.pfnSetDepthCompareOp = vk_rt.vk.vkGetDeviceProcAddr(vk_rt.device, "vkCmdSetDepthCompareOpEXT")
+
+    ffi.C.vx_stream_init(wsi)
+
+    print("[UI BOOTSTRAP] Editor Tenant WSI Registered.")
+    return ed_sc, ed_sync
+end
+
 local function main()
     print("Enter Node ID (0-7) OR Preferred Local Port (e.g., 50000): ")
     io.write("> ")
@@ -425,6 +477,8 @@ local function main()
     local sync = engine_ctx.sync_state
     local memory = require("memory")
 
+    local editor_sc, editor_sync = boot_editor_tenant(vk_rt, editor_win_id, 800, 600)
+
     print("[LUA CO] Initializing VRAM Index Buffer with Strict Topology...")
     local index_ptr = ffi.cast("uint32_t*", memory.Mapped["MASTER_INDEX_BLOCK"])
     local iso_indices = ffi.new("uint32_t[36]", {
@@ -438,7 +492,7 @@ local function main()
     local MAX_DRAW_COMMANDS = 1024
     local render_queues = ffi.new("DrawCommand[?]", MAX_DRAW_COMMANDS * cfg_gfx.cfg.frame_slots)
     local frame_count = 0
-
+ 
     local vmath = require("vmath")
     local pc = ffi.new("PushConstants")
     pc.aos_current_idx, pc.aos_prev_idx = 0, 0
@@ -502,10 +556,15 @@ local function main()
         local frame_time = math.max(0.001, math.min(current_time - last_time, 0.25))
         last_time = current_time
 
-        local mouse_left = WindowAPI.is_mouse_down(ctx.win_id, 0)
-        local mouse_x, mouse_y = WindowAPI.get_mouse_pos(ctx.win_id)
+        -- GAME INPUT
+        local game_mouse_left = WindowAPI.is_mouse_down(ctx.win_id, 0)
+        local game_mouse_x, game_mouse_y = WindowAPI.get_mouse_pos(ctx.win_id)
 
-        if mouse_left and prev_mouse_left == 0 then
+        -- EDITOR INPUT
+        local ed_mouse_left = WindowAPI.is_mouse_down(editor_win_id, 0)
+        local ed_mouse_x, ed_mouse_y = WindowAPI.get_mouse_pos(editor_win_id)
+
+        if game_mouse_left and prev_mouse_left == 0 then
             local click_x, click_y = WindowAPI.get_click_pos(ctx.win_id)
             local clicked_idx = matrix_raycast_terrain(
                 click_x, click_y, sc.extent.width, sc.extent.height,
@@ -527,7 +586,7 @@ local function main()
                 end
             end
         end
-        prev_mouse_left = mouse_left and 1 or 0
+        prev_mouse_left = game_mouse_left and 1 or 0
 
         Pump.intercept_network(ctx, ctx.sim_tick_count)
         ctx.accumulator = ctx.accumulator + frame_time
@@ -621,14 +680,17 @@ local function main()
 
             total_time = total_time + frame_time
             pc.total_time = total_time
-            camera_mod.update(cam, frame_time, mouse_x, mouse_y, sc.extent.width, sc.extent.height, ctx.win_id)
+
+            -- GAME CAMERA
+            camera_mod.update(cam, frame_time, game_mouse_x, game_mouse_y, sc.extent.width, sc.extent.height, ctx.win_id)
             camera_mod.get_matrices(cam, sc.extent.width, sc.extent.height, pc.viewProj, inv_vp)
 
-            local write_idx = EngineAPI.acquire_render_packet()
-            if write_idx ~= -1 then
+            -- 1. GAME TENANT
+            local game_idx = EngineAPI.acquire_render_packet()
+            if game_idx ~= -1 then
                 local alpha = ctx.accumulator / FIXED_DT
                 pc.dt = alpha
-                render_queue.PackFrame(write_idx, pc, ctx.rts_grid, vram_template, render_queues, active_render_mode, master_ptr, memory, gfx, desc, sc, ctx.total_tiles, ctx.net_identity, ctx.win_id)
+                render_queue.PackFrame(game_idx, pc, ctx.rts_grid, vram_template, render_queues, active_render_mode, master_ptr, memory, gfx, desc, sc, ctx.total_tiles, ctx.net_identity, ctx.win_id)
 
                 if wants_hotswap then
                     print("\n[LUA] Initiating Lock-Free Shader Hotswap...")
@@ -637,9 +699,23 @@ local function main()
                     print("[LUA] Hotswap Complete. New pipelines active.\n")
                 end
 
-                EngineAPI.commit_render_packet(write_idx)
+                EngineAPI.commit_render_packet(game_idx)
                 pump_deletion_queue(vk_rt.vk, vk_rt, frame_count)
                 frame_count = frame_count + 1
+            end
+
+            -- 2. EDITOR TENANT
+            local editor_idx = EngineAPI.acquire_render_packet()
+            if editor_idx ~= -1 then
+                local ed_packet = EngineAPI.get_render_packet(editor_idx)
+                ed_packet.target_window_id = editor_win_id
+                ed_packet.width = editor_sc.extent.width
+                ed_packet.height = editor_sc.extent.height
+
+                -- Future UI/Editor drawing goes here. For now, zero out the draw count to just clear the screen.
+                ed_packet.draw_count = 0
+
+                EngineAPI.commit_render_packet(editor_idx)
             end
         end
         sys_sleep(1)
@@ -653,7 +729,9 @@ local function main()
     require("compute_pipeline").Destroy(vk_rt.vk, vk_rt, engine_ctx.comp_state)
     require("descriptors").Destroy(vk_rt.vk, vk_rt.device, desc)
     require("swapchain").Destroy(vk_rt.vk, vk_rt, sc)
+    require("swapchain").Destroy(vk_rt.vk, vk_rt, editor_sc)
     require("renderer").Destroy(vk_rt.vk, vk_rt.device, sync, cfg_gfx.cfg.frame_slots)
+    require("renderer").Destroy(vk_rt.vk, vk_rt.device, editor_sync, cfg_gfx.cfg.frame_slots)
 
     print("[TEARDOWN] Freeing VRAM and CPU Memory Arenas...")
     memory.DestroyBuffer("MASTER_GPU_BLOCK", vk_rt)

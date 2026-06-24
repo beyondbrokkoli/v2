@@ -94,8 +94,9 @@ local order = {
 --    "c/main.c",
     -- [ LUA ENGINE MODULES ]
 --    "lua/registry_vk.lua",
-    "lua/render_queue.lua",
-    "lua/sequence.lua",
+--    "lua/render_queue.lua",
+--    "lua/sequence.lua",
+    "lua/camera.lua",
     "main.lua",
 --    "lua/pipeline_manifest.lua",
 --    "lua/vulkan_core.lua",
@@ -111,7 +112,7 @@ local order = {
 --    "lua/config_engine.lua",
 
 --    "lua/network.lua",
---    "lua/camera.lua",
+
 --    "lua/json_util.lua",
 
     -- [ GLSL SHADERS & SSOT ]
