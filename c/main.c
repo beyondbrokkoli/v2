@@ -396,18 +396,19 @@ EXPORT int vx_input_spacebar(int win_id) {
 }
 
 
+#define RING_SIZE 4
 #define LOAD(var) atomic_load_explicit(&(var), memory_order_acquire)
 #define STORE(var, val) atomic_store_explicit(&(var), (val), memory_order_release)
 
-#define RING_SIZE 16 // Supports 4 active windows x 3 WSI frames + 4 buffer slots
-
+// FFI-CONTRACT: RenderPacket mapping
 typedef struct {
     alignas(64) RenderPacket packets[RING_SIZE];
-    alignas(64) _Atomic uint32_t pending_mask; // Replaces single ready_idx
-    alignas(64) _Atomic uint32_t locked_mask;
+    alignas(64) _Atomic int ready_idx;
+    alignas(64) _Atomic uint32_t locked_mask; // REPLACES read_idx
 } RenderRing;
 
-static RenderRing g_ring = { .pending_mask = 0, .locked_mask = 0 };
+// INSTANTIATE WITH MASK
+static RenderRing g_ring = { .ready_idx = -1, .locked_mask = 0 };
 
 #define MAX_WINDOWS 4
 
@@ -563,64 +564,47 @@ THREAD_FUNC transfer_thread_loop(void* arg) {
 EXPORT void vx_stream_init(int win_id, RenderThreadInit* wsi) {
     if (win_id < 0 || win_id >= MAX_WINDOWS) return;
     atomic_store_explicit(&g_wsi_state[win_id], 0, memory_order_release);
-
-    while (atomic_load_explicit(&g_render_busy[win_id], memory_order_acquire)) {
-        SLEEP_MS(1);
-    }
-
+    while (atomic_load_explicit(&g_render_busy[win_id], memory_order_acquire)) { SLEEP_MS(1); }
     g_window_wsi[win_id] = *wsi;
-
     if (win_id == 0) {
-        atomic_store_explicit(&g_ring.pending_mask, 0, memory_order_release);
+        atomic_store_explicit(&g_ring.ready_idx, -1, memory_order_release);
         atomic_store_explicit(&g_ring.locked_mask, 0, memory_order_release);
     }
-
     atomic_store_explicit(&g_wsi_state[win_id], 1, memory_order_release);
 }
-
 EXPORT RenderPacket* vx_stream_packet(int idx) {
-    // FFI BARRIER: Prevent Lua from accessing out-of-bounds memory
-    if (idx < 0 || idx >= RING_SIZE) {
-        printf("[FATAL ERROR] Lua accessing out-of-bounds memory.\n");
-        return NULL;
-    }
     return &g_ring.packets[idx];
 }
 
 EXPORT int vx_stream_acquire() {
-    uint32_t mask = atomic_load_explicit(&g_ring.locked_mask, memory_order_acquire);
+    uint32_t mask = LOAD(g_ring.locked_mask);
+    int ready = LOAD(g_ring.ready_idx);
 
-    for (int i = 0; i < RING_SIZE; i++) {
-        if ((mask & (1 << i)) == 0) {
-            // Atomically attempt to lock the slot
-            uint32_t prev = atomic_fetch_or_explicit(&g_ring.locked_mask, (1 << i), memory_order_release);
-            if ((prev & (1 << i)) == 0) {
-                return i;
-            }
+    for (int i = 1; i <= RING_SIZE; i++) {
+        int idx = (ready + i) % RING_SIZE;
+        if ((mask & (1 << idx)) == 0) {
+            // LUA NOW LOCKS THE SLOT IMMEDIATELY
+            atomic_fetch_or_explicit(&g_ring.locked_mask, (1 << idx), memory_order_release);
+            return idx;
         }
     }
-    return -1; // Ring is fully saturated
+    return -1;
 }
 
 EXPORT void vx_stream_commit(int idx) {
-    // FFI BARRIER: Prevent undefined behavior on negative bit shifts
-    if (idx < 0 || idx >= RING_SIZE) {
-        printf("[FATAL ERROR] Lua commiting negative bit shifts.\n");
-        return;
-    }
-
+    // FORCE HARDWARE MEMORY FLUSH:
+    // Guarantees all previous ffi.copy and pointer assignments from Lua
+    // are visible in RAM before the C-Core is allowed to read this slot.
     atomic_thread_fence(memory_order_release);
-    atomic_fetch_or_explicit(&g_ring.pending_mask, (1 << idx), memory_order_release);
+    STORE(g_ring.ready_idx, idx);
 }
 
 EXPORT void vx_record_commands(VkCommandBuffer cmd, RenderPacket* p, DrawCommand* queue, uint32_t count, RenderThreadInit* win_wsi) {
     VkCommandBufferBeginInfo beginInfo = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     vkBeginCommandBuffer(cmd, &beginInfo);
 
-    // 1. Conditionally build the barriers
+    // 2. Setup Render Pass Barriers (Cleansed of ID Buffer logic)
     VkImageMemoryBarrier preBarriers[2] = {0};
-    uint32_t barrier_count = 1;
-
     preBarriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     preBarriers[0].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     preBarriers[0].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -628,20 +612,20 @@ EXPORT void vx_record_commands(VkCommandBuffer cmd, RenderPacket* p, DrawCommand
     preBarriers[0].subresourceRange = (VkImageSubresourceRange){VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     preBarriers[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 
-    if (p->depth_image != 0) {
-        preBarriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        preBarriers[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        preBarriers[1].newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-        preBarriers[1].image = (VkImage)p->depth_image;
-        preBarriers[1].subresourceRange = (VkImageSubresourceRange){VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
-        preBarriers[1].dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        barrier_count = 2;
-    }
+    preBarriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    preBarriers[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    preBarriers[1].newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    preBarriers[1].image = (VkImage)p->depth_image;
+    preBarriers[1].subresourceRange = (VkImageSubresourceRange){VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+    preBarriers[1].dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-                         0, 0, NULL, 0, NULL, barrier_count, preBarriers);
+    // Standard Fast-Path Barrier: Wait on TOP_OF_PIPE
+    vkCmdPipelineBarrier(cmd,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+        0, 0, NULL, 0, NULL, 2, preBarriers);
 
+    // --- THE FIX: Cast the opaque FFI pointers to callable Vulkan function pointers ---
     PFN_vkCmdBeginRenderingKHR pfnBegin = (PFN_vkCmdBeginRenderingKHR)win_wsi->pfnBegin;
     PFN_vkCmdEndRenderingKHR pfnEnd = (PFN_vkCmdEndRenderingKHR)win_wsi->pfnEnd;
 
@@ -651,10 +635,9 @@ EXPORT void vx_record_commands(VkCommandBuffer cmd, RenderPacket* p, DrawCommand
     colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    // Let's use a distinct color for the editor window so you know it booted correctly!
-    colorAttachment.clearValue.color.float32[0] = (p->target_window_id == 1) ? 0.2f : 0.01f;
-    colorAttachment.clearValue.color.float32[1] = (p->target_window_id == 1) ? 0.2f : 0.01f;
-    colorAttachment.clearValue.color.float32[2] = (p->target_window_id == 1) ? 0.2f : 0.02f;
+    colorAttachment.clearValue.color.float32[0] = 0.01f;
+    colorAttachment.clearValue.color.float32[1] = 0.01f;
+    colorAttachment.clearValue.color.float32[2] = 0.02f;
     colorAttachment.clearValue.color.float32[3] = 1.0f;
 
     VkRenderingAttachmentInfoKHR depthAttachment = {
@@ -666,16 +649,16 @@ EXPORT void vx_record_commands(VkCommandBuffer cmd, RenderPacket* p, DrawCommand
         .clearValue.depthStencil = {1.0f, 0}
     };
 
-    // 2. Conditionally attach the depth buffer
-    VkRenderingInfoKHR renderInfo = {
+   VkRenderingInfoKHR renderInfo = {
         .sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR,
         .renderArea.extent = {p->width, p->height},
         .layerCount = 1,
         .colorAttachmentCount = 1,
         .pColorAttachments = &colorAttachment,
-        .pDepthAttachment = (p->depth_image != 0) ? &depthAttachment : NULL
+        .pDepthAttachment = &depthAttachment
     };
 
+    // Now call the local function pointer!
     pfnBegin(cmd, &renderInfo);
 
     // 3. Global Graphics State Setup
@@ -794,44 +777,29 @@ THREAD_FUNC render_thread_loop(void* arg) {
     }
 
     int local_read = -1;
-    static int s_last_read = -1;
 
     while (atomic_load_explicit(&g_render_thread_active, memory_order_acquire) &&
            atomic_load_explicit(&g_engine.mailbox.is_running, memory_order_acquire)) {
 
-        uint32_t pending = atomic_load_explicit(&g_ring.pending_mask, memory_order_acquire);
-        if (pending == 0) {
+        // 1. Grab the latest frame from Lua
+        int ready = atomic_load_explicit(&g_ring.ready_idx, memory_order_acquire);
+        if (ready == -1 || ready == local_read) {
             SLEEP_MS(1);
             continue;
         }
 
-        // CHRONOLOGICAL FIX: Always search forward from the last consumed packet
-        int local_read = -1;
-        for (int i = 1; i <= RING_SIZE; i++) {
-            int idx = (s_last_read + i) % RING_SIZE;
-            if (pending & (1 << idx)) {
-                local_read = idx;
-                break;
-            }
-        }
-
-        if (local_read == -1) continue;
-
-        // Update the tracker so the next scan starts from here
-        s_last_read = local_read;
-
-        // Atomically claim this packet by clearing its pending bit
-        atomic_fetch_and_explicit(&g_ring.pending_mask, ~(1 << local_read), memory_order_release);
-
+        local_read = ready;
         RenderPacket* p = &g_ring.packets[local_read];
-        int wid = p->target_window_id;
+        int wid = p->target_window_id; // Added to shared_structs.h Phase 1
 
+        // 2. THE HEADLESS DROP CHECK (Crucial for deterministic networking)
         if (wid < 0 || wid >= MAX_WINDOWS || atomic_load_explicit(&g_wsi_state[wid], memory_order_acquire) == 0) {
-            // Drop packet safely if target WSI is dead/recompiling
+            // Window is dead or resizing. Unlock the slot IMMEDIATELY so Lua doesn't starve!
             atomic_fetch_and_explicit(&g_ring.locked_mask, ~(1 << local_read), memory_order_release);
             continue;
         }
 
+        // 3. ENTER VULKAN EXECUTION BLOCK (The Double-Gate Lock)
         atomic_store_explicit(&g_render_busy[wid], 1, memory_order_release);
 
         // Sanity check: Did Lua invalidate the window while we were locking?

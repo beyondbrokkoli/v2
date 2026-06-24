@@ -112,7 +112,7 @@ local order = {
 
     -- 5. LUA LEVEL 2 (Vulkan Objects & Game Systems)
 --    "lua/vulkan_core.lua",    -- Needs registry_vk, vulkan_headers
-    "lua/swapchain.lua",      -- Needs registry_vk
+--    "lua/swapchain.lua",      -- Needs registry_vk
 --    "lua/memory.lua",         -- Needs registry_vk, config_sim
 --    "lua/descriptors.lua",    -- Needs registry_vk
 --    "lua/graphics_pipeline.lua", -- Needs registry_vk
@@ -130,7 +130,7 @@ local order = {
 
     -- 7. ENTRY POINTS (Masters)
 --    "build.lua",
-    "main.lua",
+--    "main.lua",
 }
 
 for _, src in ipairs(order) do local f = io.open(src, "r") if f then
