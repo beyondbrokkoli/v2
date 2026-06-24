@@ -35,29 +35,7 @@ struct PushConstants {
     uint target_state;
     uint hover_idx;
     uint flags;
-    // Tail padded by 4 bytes
-};
-
-struct NetworkFrame {
-    uint tick;
-    uint state;
-    // Engine injected 3 pad bytes for std430
-    uint state_checksum;
-    uint remote_checksum;
-    uint remote_peer_id;
-    // Engine injected 7 pad bytes for std430
-    uint commands[8][2];
-};
-
-struct RollbackBuffer {
-    uint head_tick;
-    uint confirmed_tick;
-    uint is_rollback_active;
-    // Engine injected 3 pad bytes for std430
-    uint rollback_target;
-    // Engine injected 136 pad bytes for std430
-    uint frames[512];
-    // Tail padded by 40 bytes
+    // Engine injected pad: uint8_t[4]
 };
 
 #endif // REGISTRY_GLSL

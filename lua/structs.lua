@@ -200,7 +200,13 @@ local function compile_layouts()
             safe_align = math.max(safe_align, 16)
         end
 
-        local attr = struct.force_align and string.format("__attribute__((packed, aligned(%d)))", safe_align) or "__attribute__((packed))"
+        local attr = ""
+        if struct.wire_format then
+            attr = "__attribute__((packed))"
+        elseif struct.force_align then
+            attr = string.format("__attribute__((aligned(%d)))", safe_align)
+        end
+
         cdef_builder = cdef_builder .. string.format("typedef struct %s {\n", attr)
 
         local offset = 0

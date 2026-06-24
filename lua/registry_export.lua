@@ -99,7 +99,7 @@ local function generate_ssot(glsl_path, c_header_path)
             c_hdr:write("#pragma pack(push, 1)\n")
             c_hdr:write(string.format("typedef struct {\n"))
         else
-            local attr = struct.force_align and string.format("__attribute__((packed, aligned(%d)))", struct.align or 8) or "__attribute__((packed))"
+            local attr = struct.force_align and string.format("__attribute__((aligned(%d)))", struct.align or 8) or ""
             c_hdr:write(string.format("typedef struct %s {\n", attr))
         end
 
