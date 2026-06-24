@@ -794,6 +794,7 @@ THREAD_FUNC render_thread_loop(void* arg) {
     }
 
     int local_read = -1;
+    static int s_last_read = -1;
 
     while (atomic_load_explicit(&g_render_thread_active, memory_order_acquire) &&
            atomic_load_explicit(&g_engine.mailbox.is_running, memory_order_acquire)) {
@@ -804,16 +805,20 @@ THREAD_FUNC render_thread_loop(void* arg) {
             continue;
         }
 
-        // Find the first available bit (packet) using standard C
+        // CHRONOLOGICAL FIX: Always search forward from the last consumed packet
         int local_read = -1;
-        for (int i = 0; i < RING_SIZE; i++) {
-            if (pending & (1 << i)) {
-                local_read = i;
+        for (int i = 1; i <= RING_SIZE; i++) {
+            int idx = (s_last_read + i) % RING_SIZE;
+            if (pending & (1 << idx)) {
+                local_read = idx;
                 break;
             }
         }
 
         if (local_read == -1) continue;
+
+        // Update the tracker so the next scan starts from here
+        s_last_read = local_read;
 
         // Atomically claim this packet by clearing its pending bit
         atomic_fetch_and_explicit(&g_ring.pending_mask, ~(1 << local_read), memory_order_release);
