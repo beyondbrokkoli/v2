@@ -80,9 +80,9 @@ print("--- AI SNAPSHOT ---")
 
 local order = {
     -- 1. C-CORE & HEADERS (Absolute Foundation)
---    "c/shared_structs.h",
+    "c/shared_structs.h",
 --    "c/vx_net.c",
---    "c/main.c",
+    "c/main.c",
 
     -- 2. GLSL SHADERS & SSOT
 --    "glsl/shared.glsl",
@@ -117,16 +117,16 @@ local order = {
 --    "lua/descriptors.lua",    -- Needs registry_vk
 --    "lua/graphics_pipeline.lua", -- Needs registry_vk
 --    "lua/compute_pipeline.lua",  -- Needs registry_vk
-    "lua/renderer.lua",       -- Needs registry_vk, pipeline_manifest
+--    "lua/renderer.lua",       -- Needs registry_vk, pipeline_manifest
 --    "lua/camera.lua",         -- Needs vmath, window_api, config_gfx
-    "lua/render_queue.lua",   -- Needs pipeline_manifest, fixed_math, engine_api
+--    "lua/render_queue.lua",   -- Needs pipeline_manifest, fixed_math, engine_api
 --    "lua/net_pump.lua",       -- Needs network
 --    "lua/fsm_core.lua",       -- Needs network
 --    "lua/game_state.lua",     -- Needs network, fixed_math
 --    "lua/registry_export.lua",-- Needs structs, config_gfx, config_sim, config_net, registry_vk
 
     -- 6. LUA LEVEL 3 (Orchestration)
-    "lua/sequence.lua",       -- Needs almost everything from Level 2
+--    "lua/sequence.lua",       -- Needs almost everything from Level 2
 
     -- 7. ENTRY POINTS (Masters)
 --    "build.lua",

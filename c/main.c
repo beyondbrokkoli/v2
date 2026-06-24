@@ -396,19 +396,18 @@ EXPORT int vx_input_spacebar(int win_id) {
 }
 
 
-#define RING_SIZE 4
 #define LOAD(var) atomic_load_explicit(&(var), memory_order_acquire)
 #define STORE(var, val) atomic_store_explicit(&(var), (val), memory_order_release)
 
-// FFI-CONTRACT: RenderPacket mapping
+#define RING_SIZE 16 // Supports 4 active windows x 3 WSI frames + 4 buffer slots
+
 typedef struct {
     alignas(64) RenderPacket packets[RING_SIZE];
-    alignas(64) _Atomic int ready_idx;
-    alignas(64) _Atomic uint32_t locked_mask; // REPLACES read_idx
+    alignas(64) _Atomic uint32_t pending_mask; // Replaces single ready_idx
+    alignas(64) _Atomic uint32_t locked_mask;
 } RenderRing;
 
-// INSTANTIATE WITH MASK
-static RenderRing g_ring = { .ready_idx = -1, .locked_mask = 0 };
+static RenderRing g_ring = { .pending_mask = 0, .locked_mask = 0 };
 
 #define MAX_WINDOWS 4
 
@@ -564,39 +563,44 @@ THREAD_FUNC transfer_thread_loop(void* arg) {
 EXPORT void vx_stream_init(int win_id, RenderThreadInit* wsi) {
     if (win_id < 0 || win_id >= MAX_WINDOWS) return;
     atomic_store_explicit(&g_wsi_state[win_id], 0, memory_order_release);
-    while (atomic_load_explicit(&g_render_busy[win_id], memory_order_acquire)) { SLEEP_MS(1); }
+
+    while (atomic_load_explicit(&g_render_busy[win_id], memory_order_acquire)) {
+        SLEEP_MS(1);
+    }
+
     g_window_wsi[win_id] = *wsi;
+
     if (win_id == 0) {
-        atomic_store_explicit(&g_ring.ready_idx, -1, memory_order_release);
+        atomic_store_explicit(&g_ring.pending_mask, 0, memory_order_release);
         atomic_store_explicit(&g_ring.locked_mask, 0, memory_order_release);
     }
+
     atomic_store_explicit(&g_wsi_state[win_id], 1, memory_order_release);
 }
+
 EXPORT RenderPacket* vx_stream_packet(int idx) {
     return &g_ring.packets[idx];
 }
 
 EXPORT int vx_stream_acquire() {
-    uint32_t mask = LOAD(g_ring.locked_mask);
-    int ready = LOAD(g_ring.ready_idx);
+    uint32_t mask = atomic_load_explicit(&g_ring.locked_mask, memory_order_acquire);
 
-    for (int i = 1; i <= RING_SIZE; i++) {
-        int idx = (ready + i) % RING_SIZE;
-        if ((mask & (1 << idx)) == 0) {
-            // LUA NOW LOCKS THE SLOT IMMEDIATELY
-            atomic_fetch_or_explicit(&g_ring.locked_mask, (1 << idx), memory_order_release);
-            return idx;
+    for (int i = 0; i < RING_SIZE; i++) {
+        if ((mask & (1 << i)) == 0) {
+            // Atomically attempt to lock the slot
+            uint32_t prev = atomic_fetch_or_explicit(&g_ring.locked_mask, (1 << i), memory_order_release);
+            if ((prev & (1 << i)) == 0) {
+                return i;
+            }
         }
     }
-    return -1;
+    return -1; // Ring is fully saturated
 }
 
 EXPORT void vx_stream_commit(int idx) {
-    // FORCE HARDWARE MEMORY FLUSH:
-    // Guarantees all previous ffi.copy and pointer assignments from Lua
-    // are visible in RAM before the C-Core is allowed to read this slot.
     atomic_thread_fence(memory_order_release);
-    STORE(g_ring.ready_idx, idx);
+    // Flag this specific packet index as ready for the render thread
+    atomic_fetch_or_explicit(&g_ring.pending_mask, (1 << idx), memory_order_release);
 }
 
 EXPORT void vx_record_commands(VkCommandBuffer cmd, RenderPacket* p, DrawCommand* queue, uint32_t count, RenderThreadInit* win_wsi) {
@@ -781,25 +785,35 @@ THREAD_FUNC render_thread_loop(void* arg) {
     while (atomic_load_explicit(&g_render_thread_active, memory_order_acquire) &&
            atomic_load_explicit(&g_engine.mailbox.is_running, memory_order_acquire)) {
 
-        // 1. Grab the latest frame from Lua
-        int ready = atomic_load_explicit(&g_ring.ready_idx, memory_order_acquire);
-        if (ready == -1 || ready == local_read) {
+        uint32_t pending = atomic_load_explicit(&g_ring.pending_mask, memory_order_acquire);
+        if (pending == 0) {
             SLEEP_MS(1);
             continue;
         }
 
-        local_read = ready;
-        RenderPacket* p = &g_ring.packets[local_read];
-        int wid = p->target_window_id; // Added to shared_structs.h Phase 1
+        // Find the first available bit (packet) using standard C
+        int local_read = -1;
+        for (int i = 0; i < RING_SIZE; i++) {
+            if (pending & (1 << i)) {
+                local_read = i;
+                break;
+            }
+        }
 
-        // 2. THE HEADLESS DROP CHECK (Crucial for deterministic networking)
+        if (local_read == -1) continue;
+
+        // Atomically claim this packet by clearing its pending bit
+        atomic_fetch_and_explicit(&g_ring.pending_mask, ~(1 << local_read), memory_order_release);
+
+        RenderPacket* p = &g_ring.packets[local_read];
+        int wid = p->target_window_id;
+
         if (wid < 0 || wid >= MAX_WINDOWS || atomic_load_explicit(&g_wsi_state[wid], memory_order_acquire) == 0) {
-            // Window is dead or resizing. Unlock the slot IMMEDIATELY so Lua doesn't starve!
+            // Drop packet safely if target WSI is dead/recompiling
             atomic_fetch_and_explicit(&g_ring.locked_mask, ~(1 << local_read), memory_order_release);
             continue;
         }
 
-        // 3. ENTER VULKAN EXECUTION BLOCK (The Double-Gate Lock)
         atomic_store_explicit(&g_render_busy[wid], 1, memory_order_release);
 
         // Sanity check: Did Lua invalidate the window while we were locking?
