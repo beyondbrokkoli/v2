@@ -617,8 +617,10 @@ EXPORT void vx_record_commands(VkCommandBuffer cmd, RenderPacket* p, DrawCommand
     VkCommandBufferBeginInfo beginInfo = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     vkBeginCommandBuffer(cmd, &beginInfo);
 
-    // 2. Setup Render Pass Barriers (Cleansed of ID Buffer logic)
+    // 1. Conditionally build the barriers
     VkImageMemoryBarrier preBarriers[2] = {0};
+    uint32_t barrier_count = 1;
+
     preBarriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     preBarriers[0].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     preBarriers[0].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -626,20 +628,20 @@ EXPORT void vx_record_commands(VkCommandBuffer cmd, RenderPacket* p, DrawCommand
     preBarriers[0].subresourceRange = (VkImageSubresourceRange){VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     preBarriers[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 
-    preBarriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    preBarriers[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    preBarriers[1].newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-    preBarriers[1].image = (VkImage)p->depth_image;
-    preBarriers[1].subresourceRange = (VkImageSubresourceRange){VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
-    preBarriers[1].dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    if (p->depth_image != 0) {
+        preBarriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        preBarriers[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        preBarriers[1].newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+        preBarriers[1].image = (VkImage)p->depth_image;
+        preBarriers[1].subresourceRange = (VkImageSubresourceRange){VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+        preBarriers[1].dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        barrier_count = 2;
+    }
 
-    // Standard Fast-Path Barrier: Wait on TOP_OF_PIPE
-    vkCmdPipelineBarrier(cmd,
-        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-        0, 0, NULL, 0, NULL, 2, preBarriers);
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                         0, 0, NULL, 0, NULL, barrier_count, preBarriers);
 
-    // --- THE FIX: Cast the opaque FFI pointers to callable Vulkan function pointers ---
     PFN_vkCmdBeginRenderingKHR pfnBegin = (PFN_vkCmdBeginRenderingKHR)win_wsi->pfnBegin;
     PFN_vkCmdEndRenderingKHR pfnEnd = (PFN_vkCmdEndRenderingKHR)win_wsi->pfnEnd;
 
@@ -649,9 +651,10 @@ EXPORT void vx_record_commands(VkCommandBuffer cmd, RenderPacket* p, DrawCommand
     colorAttachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    colorAttachment.clearValue.color.float32[0] = 0.01f;
-    colorAttachment.clearValue.color.float32[1] = 0.01f;
-    colorAttachment.clearValue.color.float32[2] = 0.02f;
+    // Let's use a distinct color for the editor window so you know it booted correctly!
+    colorAttachment.clearValue.color.float32[0] = (p->target_window_id == 1) ? 0.2f : 0.01f;
+    colorAttachment.clearValue.color.float32[1] = (p->target_window_id == 1) ? 0.2f : 0.01f;
+    colorAttachment.clearValue.color.float32[2] = (p->target_window_id == 1) ? 0.2f : 0.02f;
     colorAttachment.clearValue.color.float32[3] = 1.0f;
 
     VkRenderingAttachmentInfoKHR depthAttachment = {
@@ -663,16 +666,16 @@ EXPORT void vx_record_commands(VkCommandBuffer cmd, RenderPacket* p, DrawCommand
         .clearValue.depthStencil = {1.0f, 0}
     };
 
-   VkRenderingInfoKHR renderInfo = {
+    // 2. Conditionally attach the depth buffer
+    VkRenderingInfoKHR renderInfo = {
         .sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR,
         .renderArea.extent = {p->width, p->height},
         .layerCount = 1,
         .colorAttachmentCount = 1,
         .pColorAttachments = &colorAttachment,
-        .pDepthAttachment = &depthAttachment
+        .pDepthAttachment = (p->depth_image != 0) ? &depthAttachment : NULL
     };
 
-    // Now call the local function pointer!
     pfnBegin(cmd, &renderInfo);
 
     // 3. Global Graphics State Setup
