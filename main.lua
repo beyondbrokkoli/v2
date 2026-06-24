@@ -35,10 +35,10 @@ local FSM = require("fsm_core").init(app_ctx, Game)
 local primary_win_id = 0
 
 local function sys_sleep(ms)
-    if jit.os == "Windows" then 
-        ffi.C.Sleep(ms) 
-    else 
-        ffi.C.usleep(ms * 1000) 
+    if jit.os == "Windows" then
+        ffi.C.Sleep(ms)
+    else
+        ffi.C.usleep(ms * 1000)
     end
 end
 
@@ -216,7 +216,7 @@ local function BootstrapNetworkTopology(local_port, my_local_ip)
         local scratch_handshake = ffi.new("LockstepPacket")
         local handshake_buffer = ffi.new("RxPacket[32]")
         local p2p_heard = {}
-        
+
         while (get_time_hires() - sync_start_time) < real_time_remaining do
             for peer_id, active in pairs(active_peers) do
                 if active and not p2p_established[peer_id] then

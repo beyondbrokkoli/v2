@@ -2,7 +2,6 @@
 local ffi = require("ffi")
 local bit = require("bit")
 require("vulkan_headers")
-
 local reg = require("registry_vk")
 local vk_struct = reg.vk_struct
 local vk_queue = reg.vk_queue
@@ -15,7 +14,7 @@ ffi.cdef[[
     typedef struct {
         uint32_t sType;
         void* pNext;
-        uint32_t timelineSemaphore;
+       uint32_t timelineSemaphore;
     } VkPhysicalDeviceTimelineSemaphoreFeatures;
 ]]
 
@@ -28,18 +27,20 @@ vk = lib
 
 local core = {}
 
--- [NEW] Pass gfx_cfg dynamically instead of pulling a global config
 function core.create_instance(req_extensions, gfx_cfg)
     print("[LUA] Initializing Vulkan Core (Instance Generation)...")
+
     local pCount = ffi.new("uint32_t[1]")
     local glfwExtensions = ffi.C.vx_sys_glfw_extensions(pCount)
     local exts_count = pCount[0]
-    local total_exts = exts_count + #req_extensions
 
+    local total_exts = exts_count + #req_extensions
     if gfx_cfg.use_validation == 1 then total_exts = total_exts + 1 end
 
     local instanceExtensions = ffi.new("const char*[?]", total_exts)
-    for i = 0, exts_count - 1 do instanceExtensions[i] = glfwExtensions[i] end
+    for i = 0, exts_count - 1 do
+        instanceExtensions[i] = glfwExtensions[i]
+    end
 
     local ext_idx = exts_count
     for _, ext in ipairs(req_extensions) do
@@ -75,19 +76,20 @@ function core.create_instance(req_extensions, gfx_cfg)
 
     local pInstance = ffi.new("VkInstance[1]")
     assert(vk.vkCreateInstance(createInfo, nil, pInstance) == 0, "FATAL: vkCreateInstance failed!")
-
     local instance = pInstance[0]
-    if gfx_cfg.use_validation == 1 then ffi.C.vx_sys_inject_validation(instance) end
+
+    if gfx_cfg.use_validation == 1 then
+        ffi.C.vx_sys_inject_validation(instance)
+    end
 
     return { vk = vk, instance = instance }
 end
 
--- This function doesn't actually use gfx_cfg in the original code,
--- so its signature remains identical.
 function core.finalize_device_and_swapchain(vk_state, surface_ptr, req_extensions)
     print("[LUA] Resuming Vulkan Setup. Finalizing Logical Device...")
     local vk = vk_state.vk
     local instance = vk_state.instance
+
     local surface = ffi.cast("VkSurfaceKHR", surface_ptr)
     vk_state.surface = surface
 
@@ -95,6 +97,7 @@ function core.finalize_device_and_swapchain(vk_state, surface_ptr, req_extension
     vk.vkEnumeratePhysicalDevices(instance, pDeviceCount, nil)
     local pDevices = ffi.new("VkPhysicalDevice[?]", pDeviceCount[0])
     vk.vkEnumeratePhysicalDevices(instance, pDeviceCount, pDevices)
+
     local physicalDevice = pDevices[0]
     vk_state.physicalDevice = physicalDevice
 
@@ -105,14 +108,11 @@ function core.finalize_device_and_swapchain(vk_state, surface_ptr, req_extension
 
     local qIndex = -1
     local tIndex = -1
-
     for i = 0, pQueueFamilyCount[0] - 1 do
         local flags = queueFamilies[i].queueFlags
-        -- Find Graphics Queue
         if bit.band(flags, vk_queue.graphics) ~= 0 and qIndex == -1 then
             qIndex = i
         end
-        -- Find Dedicated Transfer Queue (Has Transfer, NO Graphics)
         if bit.band(flags, vk_queue.transfer) ~= 0 and bit.band(flags, vk_queue.graphics) == 0 then
             tIndex = i
         end
@@ -146,7 +146,9 @@ function core.finalize_device_and_swapchain(vk_state, surface_ptr, req_extension
 
     local ext_count = #req_extensions
     local deviceExtensions = ffi.new("const char*[?]", ext_count)
-    for i, ext in ipairs(req_extensions) do deviceExtensions[i-1] = ext end
+    for i, ext in ipairs(req_extensions) do
+        deviceExtensions[i-1] = ext
+    end
 
     local dynamicRendering = ffi.new("VkPhysicalDeviceDynamicRenderingFeatures")
     ffi.fill(dynamicRendering, ffi.sizeof(dynamicRendering))
@@ -167,7 +169,7 @@ function core.finalize_device_and_swapchain(vk_state, surface_ptr, req_extension
 
     local timelineFeat = ffi.new("VkPhysicalDeviceTimelineSemaphoreFeatures")
     ffi.fill(timelineFeat, ffi.sizeof(timelineFeat))
-    timelineFeat.sType = 1000207000 -- VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES
+    timelineFeat.sType = 1000207000
     timelineFeat.timelineSemaphore = 1
     timelineFeat.pNext = extDynamicState2
 
@@ -180,17 +182,14 @@ function core.finalize_device_and_swapchain(vk_state, surface_ptr, req_extension
     ffi.fill(deviceCreateInfo, ffi.sizeof(deviceCreateInfo))
     deviceCreateInfo.sType = vk_struct.device_create
     deviceCreateInfo.pNext = timelineFeat
-
-    deviceCreateInfo.queueCreateInfoCount = queueCount;
-    deviceCreateInfo.pQueueCreateInfos = queueCreateInfos;
-    deviceCreateInfo.enabledExtensionCount = ext_count;
-
+    deviceCreateInfo.queueCreateInfoCount = queueCount
+    deviceCreateInfo.pQueueCreateInfos = queueCreateInfos
+    deviceCreateInfo.enabledExtensionCount = ext_count
     deviceCreateInfo.ppEnabledExtensionNames = deviceExtensions
     deviceCreateInfo.pEnabledFeatures = deviceFeatures
 
     local pDevice = ffi.new("VkDevice[1]")
     assert(vk.vkCreateDevice(physicalDevice, deviceCreateInfo, nil, pDevice) == 0, "FATAL: vkCreateDevice failed!")
-
     vk_state.device = pDevice[0]
     print("[LUA] Logical Device Created!")
 
@@ -205,14 +204,22 @@ function core.finalize_device_and_swapchain(vk_state, surface_ptr, req_extension
     return vk_state
 end
 
--- [NEW] Pass gfx_cfg dynamically so it knows whether to eject validation
 function core.Destroy(vk_state, gfx_cfg)
     print("[TEARDOWN] Shutting down Vulkan Core...")
     local vk = vk_state.vk
-    if vk_state.device ~= nil then vk.vkDestroyDevice(vk_state.device, nil) end
-    if vk_state.surface ~= nil then vk.vkDestroySurfaceKHR(vk_state.instance, vk_state.surface, nil) end
+
+    if vk_state.device ~= nil then
+        vk.vkDestroyDevice(vk_state.device, nil)
+    end
+
+    if vk_state.surface ~= nil then
+        vk.vkDestroySurfaceKHR(vk_state.instance, vk_state.surface, nil)
+    end
+
     if vk_state.instance ~= nil then
-        if gfx_cfg.use_validation == 1 then ffi.C.vx_sys_eject_validation(vk_state.instance) end
+        if gfx_cfg.use_validation == 1 then
+            ffi.C.vx_sys_eject_validation(vk_state.instance)
+        end
         vk.vkDestroyInstance(vk_state.instance, nil)
     end
 end
