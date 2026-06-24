@@ -92,18 +92,18 @@ local order = {
 
     -- 3. LUA LEAVES (Zero Dependencies)
     -- Configs, low-level math, ABIs, headers
-    "lua/config_net.lua",
-    "lua/config_sim.lua",
-    "lua/config_gfx.lua",
+--    "lua/config_net.lua",
+--    "lua/config_sim.lua",
+--    "lua/config_gfx.lua",
 --    "lua/fixed_math.lua",
 --    "lua/vmath.lua",
 --    "lua/vulkan_headers.lua",
-    "lua/core_abi.lua",
+--    "lua/core_abi.lua",
 --    "lua/pipeline_manifest.lua",
 --    "lua/dkjson.lua",
 
     -- 4. LUA LEVEL 1 (Base Bindings & Structs)
-    "lua/registry_vk.lua",    -- Needs vulkan_headers
+--    "lua/registry_vk.lua",    -- Needs vulkan_headers
     "lua/structs.lua",        -- Needs config_net
 --    "lua/window_api.lua",     -- Needs core_abi
 --    "lua/engine_api.lua",     -- Needs core_abi
@@ -129,7 +129,7 @@ local order = {
 --    "lua/sequence.lua",       -- Needs almost everything from Level 2
 
     -- 7. ENTRY POINTS (Masters)
-    "build.lua",
+--    "build.lua",
 --    "main.lua",
 }
 

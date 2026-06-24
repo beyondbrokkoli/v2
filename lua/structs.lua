@@ -195,8 +195,14 @@ local function compile_layouts()
         assert(struct.vk_shield ~= nil, "[FATAL] " .. struct.name .. " MUST define 'vk_shield' (true/false)")
         assert(struct.wire_format ~= nil, "[FATAL] " .. struct.name .. " MUST define 'wire_format' (true/false)")
         assert(struct.force_align ~= nil, "[FATAL] " .. struct.name .. " MUST define 'force_align' (true/false)")
+        assert(struct.glsl_std430 ~= nil, "[FATAL] " .. struct.name .. " MUST define 'glsl_std430' (true/false)") -- [NEW]
 
+        -- B. COMPUTE PADDING AND INJECT EXPLICIT FIELDS
         local safe_align = struct.align or 8
+        if struct.glsl_std430 then
+            safe_align = math.max(safe_align, 16)
+        end
+
         local attr = struct.force_align and string.format("__attribute__((packed, aligned(%d)))", safe_align) or "__attribute__((packed))"
         cdef_builder = cdef_builder .. string.format("typedef struct %s {\n", attr)
 
@@ -204,14 +210,20 @@ local function compile_layouts()
         local pad_id = 0
         local compiled_members = {}
 
-        -- B. COMPUTE PADDING AND INJECT EXPLICIT FIELDS
         for _, m in ipairs(struct.members) do
             local m_size = M.get_base_size(m.type)
+            local m_align = m_size
+
+            -- Apply std430 alignment rules
+            if struct.glsl_std430 then
+                if m.type == "mat4_t" then m_align = 16 end
+                if m_align > 16 then m_align = 16 end -- Caps standard base alignment at vec4 boundaries
+            end
 
             if not struct.wire_format then
-                local rem = offset % m_size
+                local rem = offset % m_align -- [CHANGED: offset % m_align instead of m_size]
                 if rem ~= 0 then
-                    local pad_bytes = m_size - rem
+                    local pad_bytes = m_align - rem
                     -- INJECT PADDING DIRECTLY INTO THE AST
                     table.insert(compiled_members, { type = "uint8_t", name = "_pad_auto_" .. pad_id, count = pad_bytes, is_pad = true })
 
@@ -223,7 +235,6 @@ local function compile_layouts()
 
             -- Keep the original member
             table.insert(compiled_members, m)
-
             -- Compute size for next offset
             local element_count = 1
             local arr_str = ""
