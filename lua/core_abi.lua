@@ -3,7 +3,8 @@ local ffi = require("ffi")
 
 ffi.cdef[[
 // C-Core Multi-Tenant Window & Input API
-void vx_sys_publish_instance(void* instance);
+
+void vx_sys_publish_instance(int win_id, void* instance);
 void vx_sys_set_cmd(int win_id, int cmd, int w, int h);
 void* vx_sys_get_surface(int win_id);
 int vx_sys_resize_flag(int win_id);
@@ -29,7 +30,7 @@ int vx_stream_acquire();
 RenderPacket* vx_stream_packet(int idx);
 void vx_stream_commit(int idx);
 void vx_thread_kill();
-void vx_stream_init(RenderThreadInit* wsi);
+void vx_stream_init(int win_id, void* wsi);
 void vx_thread_start();
 void vx_transfer_setup(uint32_t q_family_index);
 int vx_transfer_request(uint64_t src, uint64_t dst, uint64_t size, uint64_t t_sem, uint64_t sig_val);

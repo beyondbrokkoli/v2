@@ -13,12 +13,14 @@ function SequenceModule.init(app_ctx)
     local seq = {}
 
     seq.boot = {
-        {
+        { -- Stage 1
             name = "Vulkan Instance",
             action = function(ctx)
                 local vulkan = require("vulkan_core")
                 ctx.vk_runtime = vulkan.create_instance(reg.vk_reqs.instance_ext, cfg_gfx.cfg)
-                EngineAPI.publish_instance(ctx.vk_runtime.instance)
+
+                -- [FIXED] Pass ctx.win_id to the C-Core mailbox
+                EngineAPI.publish_instance(ctx.win_id, ctx.vk_runtime.instance)
             end
         },
         {
@@ -135,9 +137,11 @@ function SequenceModule.init(app_ctx)
                 wsi.pfnSetDepthCompareOp = vk.vkGetDeviceProcAddr(dev, "vkCmdSetDepthCompareOpEXT")
 
                 EngineAPI.setup_transfer(ctx.vk_runtime.tIndex)
-                EngineAPI.init_stream(wsi)
-                EngineAPI.start_thread()
 
+                -- [FIXED] Bind the WSI to the specific window tenant
+                EngineAPI.init_stream(ctx.win_id, wsi)
+
+                EngineAPI.start_thread()
                 print("[WEAVER] Engine Initialization Complete. Async Overlord is LIVE.")
             end
         }

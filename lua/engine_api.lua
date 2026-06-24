@@ -4,8 +4,8 @@ local C = require("core_abi")
 
 local EngineAPI = {}
 
-function EngineAPI.publish_instance(instance_ptr)
-    C.vx_sys_publish_instance(instance_ptr)
+function EngineAPI.publish_instance(win_id, instance_ptr)
+    C.vx_sys_publish_instance(win_id, instance_ptr)
 end
 
 function EngineAPI.acquire_render_packet()
@@ -36,8 +36,8 @@ function EngineAPI.kill_thread()
     C.vx_thread_kill()
 end
 
-function EngineAPI.init_stream(wsi_ptr)
-    C.vx_stream_init(wsi_ptr)
+function EngineAPI.init_stream(win_id, wsi_ptr)
+    C.vx_stream_init(win_id, wsi_ptr)
 end
 
 function EngineAPI.start_thread()
