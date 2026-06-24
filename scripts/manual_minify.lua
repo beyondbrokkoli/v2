@@ -94,30 +94,30 @@ local order = {
     -- Configs, low-level math, ABIs, headers
 --    "lua/config_net.lua",
 --    "lua/config_sim.lua",
-    "lua/config_gfx.lua",
+--    "lua/config_gfx.lua",
 --    "lua/fixed_math.lua",
 --    "lua/vmath.lua",
 --    "lua/vulkan_headers.lua",
-    "lua/core_abi.lua",
+--    "lua/core_abi.lua",
 --    "lua/pipeline_manifest.lua",
 --    "lua/dkjson.lua",
 
     -- 4. LUA LEVEL 1 (Base Bindings & Structs)
 --    "lua/registry_vk.lua",    -- Needs vulkan_headers
-    "lua/structs.lua",        -- Needs config_net
-    "lua/window_api.lua",     -- Needs core_abi
-    "lua/engine_api.lua",     -- Needs core_abi
+--    "lua/structs.lua",        -- Needs config_net
+--    "lua/window_api.lua",     -- Needs core_abi
+--    "lua/engine_api.lua",     -- Needs core_abi
 --    "lua/network.lua",        -- Needs FFI
 --    "lua/json_util.lua",      -- Needs dkjson
 
     -- 5. LUA LEVEL 2 (Vulkan Objects & Game Systems)
 --    "lua/vulkan_core.lua",    -- Needs registry_vk, vulkan_headers
-    "lua/swapchain.lua",      -- Needs registry_vk
+--    "lua/swapchain.lua",      -- Needs registry_vk
 --    "lua/memory.lua",         -- Needs registry_vk, config_sim
 --    "lua/descriptors.lua",    -- Needs registry_vk
 --    "lua/graphics_pipeline.lua", -- Needs registry_vk
 --    "lua/compute_pipeline.lua",  -- Needs registry_vk
---    "lua/renderer.lua",       -- Needs registry_vk, pipeline_manifest
+    "lua/renderer.lua",       -- Needs registry_vk, pipeline_manifest
 --    "lua/camera.lua",         -- Needs vmath, window_api, config_gfx
     "lua/render_queue.lua",   -- Needs pipeline_manifest, fixed_math, engine_api
 --    "lua/net_pump.lua",       -- Needs network
@@ -130,7 +130,7 @@ local order = {
 
     -- 7. ENTRY POINTS (Masters)
 --    "build.lua",
-    "main.lua",
+--    "main.lua",
 }
 
 for _, src in ipairs(order) do local f = io.open(src, "r") if f then

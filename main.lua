@@ -212,7 +212,7 @@ local function boot_editor_tenant(vk_rt, editor_win_id, width, height)
     wsi.pfnSetDepthWriteEnable = vk_rt.vk.vkGetDeviceProcAddr(vk_rt.device, "vkCmdSetDepthWriteEnableEXT")
     wsi.pfnSetDepthCompareOp = vk_rt.vk.vkGetDeviceProcAddr(vk_rt.device, "vkCmdSetDepthCompareOpEXT")
 
-    ffi.C.vx_stream_init(wsi)
+    EngineAPI.init_stream(editor_win_id, wsi);
 
     print("[UI BOOTSTRAP] Editor Tenant WSI Registered.")
     return ed_sc, ed_sync
@@ -272,7 +272,12 @@ local function main()
     local sync = engine_ctx.sync_state
     local memory = require("memory")
 
-    local editor_sc, editor_sync = boot_editor_tenant(vk_rt, editor_win_id, 800, 600)
+    local editor_booted = false
+    local editor_sc = nil
+    local editor_sync = nil
+    local editor_cam = camera_mod.new()
+    local ed_inv_vp = ffi.new("mat4_t")
+    local ed_pc = ffi.new("PushConstants")
 
     print("[LUA CO] Initializing VRAM Index Buffer with Strict Topology...")
     local index_ptr = ffi.cast("uint32_t*", memory.Mapped["MASTER_INDEX_BLOCK"])
@@ -355,10 +360,6 @@ local function main()
         local game_mouse_left = WindowAPI.is_mouse_down(ctx.win_id, 0)
         local game_mouse_x, game_mouse_y = WindowAPI.get_mouse_pos(ctx.win_id)
 
-        -- EDITOR INPUT
-        local ed_mouse_left = WindowAPI.is_mouse_down(editor_win_id, 0)
-        local ed_mouse_x, ed_mouse_y = WindowAPI.get_mouse_pos(editor_win_id)
-
         if game_mouse_left and prev_mouse_left == 0 then
             local click_x, click_y = WindowAPI.get_click_pos(ctx.win_id)
             local clicked_idx = matrix_raycast_terrain(
@@ -409,7 +410,13 @@ local function main()
         if last_key == cfg_gfx.key.esc then
             EngineAPI.shutdown()
         elseif last_key == cfg_gfx.key.f5 then
-            wants_hotswap = true
+            if not editor_booted then
+                print("[MULTIPLEXER] F5 Pressed. Spawning Editor Tenant on Window ID: " .. editor_win_id)
+                editor_sc, editor_sync = boot_editor_tenant(vk_rt, editor_win_id, 800, 600)
+                editor_booted = true
+            else
+                wants_hotswap = true -- If already booted, act as a shader hot-reload!
+            end
         elseif last_key == cfg_gfx.key.num1 then
             active_render_mode = cfg_gfx.mode.dual
         elseif last_key == cfg_gfx.key.num2 then
@@ -476,9 +483,15 @@ local function main()
             total_time = total_time + frame_time
             pc.total_time = total_time
 
-            -- GAME CAMERA
             camera_mod.update(cam, frame_time, game_mouse_x, game_mouse_y, sc.extent.width, sc.extent.height, ctx.win_id)
             camera_mod.get_matrices(cam, sc.extent.width, sc.extent.height, pc.viewProj, inv_vp)
+
+            if editor_booted then
+                -- Mathematically isolated!
+                local ed_mouse_x, ed_mouse_y = WindowAPI.get_mouse_pos(editor_win_id)
+                camera_mod.update(editor_cam, frame_time, ed_mouse_x, ed_mouse_y, 800, 600, editor_win_id)
+                camera_mod.get_matrices(editor_cam, 800, 600, ed_pc.viewProj, ed_inv_vp)
+            end
 
             -- 1. GAME TENANT
             local game_idx = EngineAPI.acquire_render_packet()
@@ -499,18 +512,16 @@ local function main()
                 frame_count = frame_count + 1
             end
 
-            -- 2. EDITOR TENANT
-            local editor_idx = EngineAPI.acquire_render_packet()
-            if editor_idx ~= -1 then
-                local ed_packet = EngineAPI.get_render_packet(editor_idx)
-                ed_packet.target_window_id = editor_win_id
-                ed_packet.width = editor_sc.extent.width
-                ed_packet.height = editor_sc.extent.height
-
-                -- Future UI/Editor drawing goes here. For now, zero out the draw count to just clear the screen.
-                ed_packet.draw_count = 0
-
-                EngineAPI.commit_render_packet(editor_idx)
+            if editor_booted then
+                local editor_idx = EngineAPI.acquire_render_packet()
+                if editor_idx ~= -1 then
+                    local ed_packet = EngineAPI.get_render_packet(editor_idx)
+                    ed_packet.target_window_id = editor_win_id
+                    ed_packet.width = editor_sc.extent.width
+                    ed_packet.height = editor_sc.extent.height
+                    ed_packet.draw_count = 0 -- Perfectly blank canvas
+                    EngineAPI.commit_render_packet(editor_idx)
+                end
             end
         end
         sys_sleep(1)
@@ -524,10 +535,11 @@ local function main()
     require("compute_pipeline").Destroy(vk_rt.vk, vk_rt, engine_ctx.comp_state)
     require("descriptors").Destroy(vk_rt.vk, vk_rt.device, desc)
     require("swapchain").Destroy(vk_rt.vk, vk_rt, sc)
-    require("swapchain").Destroy(vk_rt.vk, vk_rt, editor_sc)
     require("renderer").Destroy(vk_rt.vk, vk_rt.device, sync, cfg_gfx.cfg.frame_slots)
-    require("renderer").Destroy(vk_rt.vk, vk_rt.device, editor_sync, cfg_gfx.cfg.frame_slots)
-
+    if editor_booted then
+        require("swapchain").Destroy(vk_rt.vk, vk_rt, editor_sc)
+        require("renderer").Destroy(vk_rt.vk, vk_rt.device, editor_sync, cfg_gfx.cfg.frame_slots)
+    end
     print("[TEARDOWN] Freeing VRAM and CPU Memory Arenas...")
     memory.DestroyBuffer("MASTER_GPU_BLOCK", vk_rt)
     memory.DestroyBuffer("MASTER_INDEX_BLOCK", vk_rt)
