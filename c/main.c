@@ -830,8 +830,15 @@ THREAD_FUNC render_thread_loop(void* arg) {
         // Acquire Image
         PFN_vkAcquireNextImageKHR pfnAcquire = (PFN_vkAcquireNextImageKHR)win_wsi->vkAcquireNextImageKHR;
         uint32_t img_idx;
-        VkResult res = pfnAcquire(win_wsi->device, win_wsi->swapchain, UINT64_MAX,
-                                  win_wsi->image_available[current_frame], VK_NULL_HANDLE, &img_idx);
+
+        // 5ms timeout. If it times out, drop the lock and yield to the OS/Main Thread.
+        VkResult res = pfnAcquire(win_wsi->device, win_wsi->swapchain, 5000000, win_wsi->image_available[current_frame], VK_NULL_HANDLE, &img_idx);
+
+        if (res == VK_TIMEOUT || res == VK_NOT_READY) {
+            atomic_store_explicit(&g_render_busy[wid], 0, memory_order_release);
+            SLEEP_MS(1); // Crucial: Give the Main Thread's glfwCreateWindow time to execute
+            continue;
+        }
 
         if (res == VK_ERROR_OUT_OF_DATE_KHR) {
             atomic_store_explicit(&g_engine.mailbox.window_resized[wid], 1, memory_order_release);
@@ -1003,12 +1010,23 @@ int main(int argc, char** argv) {
             int cmd = atomic_exchange_explicit(&g_engine.mailbox.glfw_cmd[id], CMD_IDLE, memory_order_acquire);
 
             if (cmd == CMD_BOOT_WINDOW && windows[id] == NULL) {
+                // [PATCH] 1. Global WSI Barrier: Suspend all rendering to release OS Display locks
+                for (int i = 0; i < MAX_WINDOWS; i++) {
+                    if (atomic_load_explicit(&g_wsi_state[i], memory_order_acquire) == 1) {
+                        atomic_store_explicit(&g_wsi_state[i], 0, memory_order_release);
+                        // Wait for the Render Thread to hit our new VK_TIMEOUT and drop the busy flag
+                        while (atomic_load_explicit(&g_render_busy[i], memory_order_acquire)) {
+                            SLEEP_MS(1);
+                        }
+                    }
+                }
+
                 int w = atomic_load_explicit(&g_engine.mailbox.glfw_arg_w[id], memory_order_relaxed);
                 int h = atomic_load_explicit(&g_engine.mailbox.glfw_arg_h[id], memory_order_relaxed);
 
                 glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
                 glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
-                windows[id] = glfwCreateWindow(w, h, "Weaver Engine", NULL, NULL);
+                windows[id] = glfwCreateWindow(w, h, "Weaver Engine Editor", NULL, NULL);
 
                 // CRITICAL FIX: Bind the tenant ID to the GLFW window for callbacks
                 glfwSetWindowUserPointer(windows[id], (void*)(intptr_t)id);
@@ -1029,12 +1047,25 @@ int main(int argc, char** argv) {
                 atomic_store_explicit(&g_engine.mailbox.win_w[id], fb_w, memory_order_release);
                 atomic_store_explicit(&g_engine.mailbox.win_h[id], fb_h, memory_order_release);
 
+                // [PATCH] 2. Fallback to primary instance if Lua hasn't mapped the tenant instance yet
                 void* instance = atomic_load_explicit(&g_engine.mailbox.vk_instance[id], memory_order_acquire);
+                if (instance == NULL) {
+                    instance = atomic_load_explicit(&g_engine.mailbox.vk_instance[0], memory_order_acquire);
+                }
+
                 if (instance != NULL) {
                     VkSurfaceKHR surface;
                     if (glfwCreateWindowSurface((VkInstance)instance, windows[id], NULL, &surface) == VK_SUCCESS) {
                         atomic_store_explicit(&g_engine.mailbox.vk_surface[id], (void*)surface, memory_order_release);
-                        printf("[C-CORE] Tenant %d: Window & Surface Created on Lua's Demand!\n", id);
+                        printf("[C-CORE] Tenant %d: Window & Surface Created safely!\n", id);
+                    }
+                }
+
+                // [PATCH] 3. Resume rendering ONLY for previously active windows.
+                // Do NOT resume the new window (id); Lua's vx_stream_init() handles that atomic handoff securely.
+                for (int i = 0; i < MAX_WINDOWS; i++) {
+                    if (windows[i] != NULL && i != id) {
+                        atomic_store_explicit(&g_wsi_state[i], 1, memory_order_release);
                     }
                 }
             }
