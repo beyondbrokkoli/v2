@@ -291,9 +291,10 @@ local function main()
 
     print("[LUA CO] Allocating Direct FFI Render Queues...")
     local MAX_DRAW_COMMANDS = 1024
-    local render_queues = ffi.new("DrawCommand[?]", MAX_DRAW_COMMANDS * cfg_gfx.cfg.frame_slots)
+    local C_RING_SIZE = 16 -- MUST strictly match C11 main.c RING_SIZE
+    local render_queues = ffi.new("DrawCommand[?]", MAX_DRAW_COMMANDS * C_RING_SIZE)
     local frame_count = 0
- 
+
     local vmath = require("vmath")
     local pc = ffi.new("PushConstants")
     pc.aos_current_idx, pc.aos_prev_idx = 0, 0

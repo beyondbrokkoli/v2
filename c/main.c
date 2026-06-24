@@ -579,6 +579,11 @@ EXPORT void vx_stream_init(int win_id, RenderThreadInit* wsi) {
 }
 
 EXPORT RenderPacket* vx_stream_packet(int idx) {
+    // FFI BARRIER: Prevent Lua from accessing out-of-bounds memory
+    if (idx < 0 || idx >= RING_SIZE) {
+        printf("[FATAL ERROR] Lua accessing out-of-bounds memory.\n");
+        return NULL;
+    }
     return &g_ring.packets[idx];
 }
 
@@ -598,8 +603,13 @@ EXPORT int vx_stream_acquire() {
 }
 
 EXPORT void vx_stream_commit(int idx) {
+    // FFI BARRIER: Prevent undefined behavior on negative bit shifts
+    if (idx < 0 || idx >= RING_SIZE) {
+        printf("[FATAL ERROR] Lua commiting negative bit shifts.\n");
+        return;
+    }
+
     atomic_thread_fence(memory_order_release);
-    // Flag this specific packet index as ready for the render thread
     atomic_fetch_or_explicit(&g_ring.pending_mask, (1 << idx), memory_order_release);
 }
 
