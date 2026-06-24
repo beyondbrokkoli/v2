@@ -14,6 +14,47 @@ pcall(function() cfg_net = require("config_net") end)
 local reg = nil
 pcall(function() reg = require("registry_vk") end)
 
+local function enforce_strict_invariants(specs)
+    print(" |- [HARNESS] Running Invariant Asserts...")
+    local found_structs = {}
+
+    for _, struct in ipairs(specs) do
+        found_structs[struct.name] = struct
+    end
+
+    -- 1. MULTI-TENANT MULTIPLEXER ASSERTIONS
+    local rt_init = found_structs["RenderThreadInit"]
+    assert(rt_init, "[FATAL] Gremlin removed RenderThreadInit!")
+
+    local wsi_found = false
+    local swapchain_arr_found = false
+    for _, m in ipairs(rt_init.members) do
+        if m.name == "swapchain" and m.type == "VkSwapchainKHR" then wsi_found = true end
+        if m.name == "swapchain_images" and m.count == 10 then swapchain_arr_found = true end
+    end
+    assert(wsi_found, "[FATAL INVARIANT] RenderThreadInit is missing the Vulkan Swapchain pointer. Multi-tenant WSI isolation broken!")
+    assert(swapchain_arr_found, "[FATAL INVARIANT] RenderThreadInit swapchain_images array missing or count modified!")
+
+    -- 2. RENDER PACKET ROUTING ASSERTIONS
+    local r_packet = found_structs["RenderPacket"]
+    assert(r_packet, "[FATAL] Gremlin removed RenderPacket!")
+
+    local target_win_found = false
+    for _, m in ipairs(r_packet.members) do
+        if m.name == "target_window_id" and m.type == "uint32_t" then target_win_found = true end
+    end
+    assert(target_win_found, "[FATAL INVARIANT] RenderPacket is missing 'target_window_id'. Render multiplexing will bleed between OS windows!")
+    assert(r_packet.force_align and r_packet.align == 64, "[FATAL INVARIANT] RenderPacket must be strictly 64-byte aligned for lock-free ring buffer cache-line efficiency!")
+
+    -- 3. DETERMINISTIC NETCODE ASSERTIONS
+    local lockstep = found_structs["LockstepPacket"]
+    assert(lockstep, "[FATAL] Gremlin removed LockstepPacket!")
+    assert(lockstep.wire_format == true, "[FATAL INVARIANT] LockstepPacket lost its wire_format flag! Struct padding will cause a deterministic desync!")
+    assert(lockstep.align == 1, "[FATAL INVARIANT] LockstepPacket alignment altered. Must be 1-byte packed for network transmission!")
+
+    print(" |- [HARNESS] All system-critical invariants passed.")
+end
+
 local function get_sorted_keys(t)
     local keys = {}
     for k in pairs(t) do table.insert(keys, k) end
@@ -28,6 +69,9 @@ local function map_glsl_type(type_str)
 end
 
 local function generate_ssot(glsl_path, c_header_path)
+    -- [NEW] Run the assert floodgate first!
+    enforce_strict_invariants(structs_mod.specs)
+
     local glsl = io.open(glsl_path, "w")
     local c_hdr = io.open(c_header_path, "w")
 
@@ -101,99 +145,48 @@ local function generate_ssot(glsl_path, c_header_path)
     for _, struct in ipairs(structs_mod.specs) do
         local is_glsl = not struct.c_only and not struct.wire_format
 
-        if struct.vk_shield then
-            c_hdr:write("#ifdef VX_ENABLE_VULKAN_STRUCTS\n")
-        end
+        if struct.vk_shield then c_hdr:write("#ifdef VX_ENABLE_VULKAN_STRUCTS\n") end
 
         if struct.wire_format then
             c_hdr:write("#pragma pack(push, 1)\n")
             c_hdr:write(string.format("typedef struct {\n"))
         else
-            -- [NEW] Drop the 'packed' attribute. We want standard C ABI alignment!
-            -- We only keep 'aligned(X)' for cache-line optimizations if requested.
             local safe_align = struct.align or 8
             local attr = struct.force_align and string.format("__attribute__((aligned(%d)))", safe_align) or ""
             c_hdr:write(string.format("typedef struct %s {\n", attr))
         end
 
-        if is_glsl then
-            glsl:write(string.format("struct %s {\n", struct.name))
-        end
+        if is_glsl then glsl:write(string.format("struct %s {\n", struct.name)) end
 
-        local offset = 0
-        local pad_id = 0
-
+        -- THE MAGIC: We just blindly iterate. No math required!
         for _, m in ipairs(struct.members) do
-            local m_size = resolve_member_size(m.type)
-
-            if not struct.wire_format then
-                local rem = offset % m_size
-                if rem ~= 0 then
-                    local pad_bytes = m_size - rem
-                    c_hdr:write(string.format("    uint8_t _pad_auto_%d[%d];\n", pad_id, pad_bytes))
-                    if is_glsl then
-                        glsl:write(string.format("    // Engine injected %d pad bytes for std430\n", pad_bytes))
-                    end
-                    offset = offset + pad_bytes
-                    pad_id = pad_id + 1
-                end
-            end
-
             local arr_str = ""
-            local element_count = 1
             if type(m.count) == "table" then
-                for _, dim in ipairs(m.count) do
-                    arr_str = arr_str .. string.format("[%d]", dim)
-                    element_count = element_count * dim
-                end
+                for _, dim in ipairs(m.count) do arr_str = arr_str .. string.format("[%d]", dim) end
             elseif m.count then
                 arr_str = string.format("[%d]", m.count)
-                element_count = m.count
             end
 
             c_hdr:write(string.format("    %s %s%s;\n", m.type, m.name, arr_str))
 
             if is_glsl then
-                local glsl_type = map_glsl_type(m.type)
-                glsl:write(string.format("    %s %s%s;\n", glsl_type, m.name, arr_str))
-            end
-
-            local real_size = m_size * element_count
-            if dynamic_sizes[m.type] then
-                 real_size = dynamic_sizes[m.type] * element_count
-            end
-            offset = offset + real_size
-        end
-
-        if not struct.wire_format then
-            -- [NEW] Fallback to 8-byte standard C ABI alignment if omitted
-            local safe_align = struct.align or 8
-
-            local tail_rem = offset % safe_align
-            if tail_rem ~= 0 then
-                local tail_pad = safe_align - tail_rem
-                c_hdr:write(string.format("    uint8_t _pad_tail[%d];\n", tail_pad))
-                if is_glsl then
-                    glsl:write(string.format("    // Tail padded by %d bytes\n", tail_pad))
+                if m.is_pad then
+                    glsl:write(string.format("    // Engine injected pad: %s[%s]\n", m.type, tostring(m.count)))
+                else
+                    local glsl_type = map_glsl_type(m.type)
+                    glsl:write(string.format("    %s %s%s;\n", glsl_type, m.name, arr_str))
                 end
-                offset = offset + tail_pad
             end
-            c_hdr:write("} " .. struct.name .. ";\n\n")
+        end
+
+        if struct.wire_format then
+            c_hdr:write("} " .. struct.name .. ";\n#pragma pack(pop)\n\n")
         else
-            c_hdr:write("} " .. struct.name .. ";\n")
-            c_hdr:write("#pragma pack(pop)\n\n")
+            c_hdr:write("} " .. struct.name .. ";\n\n")
         end
 
-        -- Close the shield
-        if struct.vk_shield then
-            c_hdr:write("#endif // VX_ENABLE_VULKAN_STRUCTS\n\n")
-        end
-
-        if is_glsl then
-            glsl:write("};\n\n")
-        end
-
-        dynamic_sizes[struct.name] = offset
+        if struct.vk_shield then c_hdr:write("#endif // VX_ENABLE_VULKAN_STRUCTS\n\n") end
+        if is_glsl then glsl:write("};\n\n") end
     end
 
     glsl:write("#endif // REGISTRY_GLSL\n")

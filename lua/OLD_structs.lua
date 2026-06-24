@@ -1,34 +1,29 @@
 local ffi = require("ffi")
 local cfg_net = require("config_net")
-
 local M = {}
 
--- 1. UNIFIED TYPE SIZE REGISTRY
-M.type_sizes = {
+local struct_sizes = {
     float = 4, uint32_t = 4, int32_t = 4,
     uint64_t = 8, int64_t = 8,
     uint16_t = 2, int16_t = 2,
     uint8_t = 1, int8_t = 1
 }
 
-function M.get_base_size(type_str)
-    if M.type_sizes[type_str] then return M.type_sizes[type_str] end
-    if string.find(type_str, "*") or string.find(type_str, "64") then return 8 end
+local function get_base_size(type_str)
+    if struct_sizes[type_str] then return struct_sizes[type_str] end
+    if string.find(type_str, "*") then return 8 end
+    if string.find(type_str, "64") then return 8 end
     if string.find(type_str, "32") or type_str == "float" then return 4 end
     if string.find(type_str, "16") then return 2 end
     if string.find(type_str, "8") then return 1 end
-    if string.sub(type_str, 1, 2) == "Vk" or string.sub(type_str, 1, 4) == "PFN_" then return 8 end
-    error("[FATAL INVARIANT] Unknown type size requested in SSoT Compiler: " .. tostring(type_str))
+
+    -- [NEW] Map native Vulkan handles and function pointers to 8 bytes
+    if string.sub(type_str, 1, 2) == "Vk" then return 8 end
+    if string.sub(type_str, 1, 4) == "PFN_" then return 8 end
+
+    error("[FATAL] Unknown type size requested in SSoT Generator: " .. tostring(type_str))
 end
 
--- [ YOUR M.specs GO HERE ]
--- EXAMPLE OF EXPLICIT FLAGS REQUIRED:
--- {
---     name = "RenderPacket",
---     c_only = true, vk_shield = false, wire_format = false, force_align = true, align = 64,
---     members = { ... }
--- }
--- VANILLA STRUCTS M.SPECS
 M.specs = {
     -- GRAPHICS & VULKAN MEMORY DOMAIN
     {
@@ -185,86 +180,74 @@ M.specs = {
         }
     },
 }
--- 2. THE LAYOUT COMPILER & INVARIANT ENFORCER
-local function compile_layouts()
-    local cdef_builder = ""
 
-    for _, struct in ipairs(M.specs) do
-        -- A. STRICT FLAG ENFORCEMENT (Weaponizing Nil)
-        assert(struct.c_only ~= nil, "[FATAL] " .. struct.name .. " MUST define 'c_only' (true/false)")
-        assert(struct.vk_shield ~= nil, "[FATAL] " .. struct.name .. " MUST define 'vk_shield' (true/false)")
-        assert(struct.wire_format ~= nil, "[FATAL] " .. struct.name .. " MUST define 'wire_format' (true/false)")
-        assert(struct.force_align ~= nil, "[FATAL] " .. struct.name .. " MUST define 'force_align' (true/false)")
+-- Code Generation and FFI Binding Setup
+local cdef_builder = ""
+for _, struct in ipairs(M.specs) do
+    local attr = struct.force_align and "__attribute__((packed, aligned("..struct.align..")))" or "__attribute__((packed))"
+    cdef_builder = cdef_builder .. string.format("typedef struct %s {\n", attr)
 
-        local safe_align = struct.align or 8
-        local attr = struct.force_align and string.format("__attribute__((packed, aligned(%d)))", safe_align) or "__attribute__((packed))"
-        cdef_builder = cdef_builder .. string.format("typedef struct %s {\n", attr)
+    local offset = 0
+    local pad_id = 0
 
-        local offset = 0
-        local pad_id = 0
-        local compiled_members = {}
+    for _, m in ipairs(struct.members) do
+        local m_size = get_base_size(m.type)
 
-        -- B. COMPUTE PADDING AND INJECT EXPLICIT FIELDS
-        for _, m in ipairs(struct.members) do
-            local m_size = M.get_base_size(m.type)
-
-            if not struct.wire_format then
-                local rem = offset % m_size
-                if rem ~= 0 then
-                    local pad_bytes = m_size - rem
-                    -- INJECT PADDING DIRECTLY INTO THE AST
-                    table.insert(compiled_members, { type = "uint8_t", name = "_pad_auto_" .. pad_id, count = pad_bytes, is_pad = true })
-
-                    cdef_builder = cdef_builder .. string.format("    uint8_t _pad_auto_%d[%d];\n", pad_id, pad_bytes)
-                    offset = offset + pad_bytes
-                    pad_id = pad_id + 1
-                end
-            end
-
-            -- Keep the original member
-            table.insert(compiled_members, m)
-
-            -- Compute size for next offset
-            local element_count = 1
-            local arr_str = ""
-            if type(m.count) == "table" then
-                for _, dim in ipairs(m.count) do
-                    arr_str = arr_str .. string.format("[%d]", dim)
-                    element_count = element_count * dim
-                end
-            elseif m.count then
-                arr_str = string.format("[%d]", m.count)
-                element_count = m.count
-            end
-
-            local ffi_type = m.type
-            if string.sub(ffi_type, 1, 2) == "Vk" or string.sub(ffi_type, 1, 4) == "PFN_" then ffi_type = "void*" end
-            cdef_builder = cdef_builder .. string.format("    %s %s%s;\n", ffi_type, m.name, arr_str)
-
-            offset = offset + (M.type_sizes[m.type] and M.type_sizes[m.type] * element_count or m_size * element_count)
-        end
-
-        -- C. TAIL PADDING INJECTION
+        -- C-Side Padding for FFI sync (Disabled for wire formats)
         if not struct.wire_format then
-            local tail_rem = offset % safe_align
-            if tail_rem ~= 0 then
-                local tail_pad = safe_align - tail_rem
-                table.insert(compiled_members, { type = "uint8_t", name = "_pad_tail", count = tail_pad, is_pad = true })
-                cdef_builder = cdef_builder .. string.format("    uint8_t _pad_tail[%d];\n", tail_pad)
-                offset = offset + tail_pad
+            local rem = offset % m_size
+            if rem ~= 0 then
+                local pad_bytes = m_size - rem
+                cdef_builder = cdef_builder .. string.format("    uint8_t _pad_%d[%d];\n", pad_id, pad_bytes)
+                offset = offset + pad_bytes
+                pad_id = pad_id + 1
             end
         end
 
-        -- D. OVERWRITE AST & REGISTER SIZE
-        struct.members = compiled_members
-        cdef_builder = cdef_builder .. "} " .. struct.name .. ";\n\n"
-        M.type_sizes[struct.name] = offset
+        -- Array Generation
+        local arr = ""
+        local element_count = 1
+        if type(m.count) == "table" then
+            for _, dim in ipairs(m.count) do
+                arr = arr .. string.format("[%d]", dim)
+                element_count = element_count * dim
+            end
+        elseif m.count then
+            arr = string.format("[%d]", m.count)
+            element_count = m.count
+        end
+
+        -- [NEW] Intercept Vulkan types and map them to void* strictly for Lua's FFI parser.
+        -- This prevents the need to load bloated Vulkan headers in the networking backend.
+        local ffi_type = m.type
+        if string.sub(ffi_type, 1, 2) == "Vk" or string.sub(ffi_type, 1, 4) == "PFN_" then
+            ffi_type = "void*"
+        end
+
+        cdef_builder = cdef_builder .. string.format(" %s %s%s;\n", ffi_type, m.name, arr);
+
+        local real_size = m_size * element_count
+        if struct_sizes[m.type] then
+            real_size = struct_sizes[m.type] * element_count
+        end
+        offset = offset + real_size
     end
 
-    ffi.cdef(cdef_builder)
+    if not struct.wire_format then
+        -- [NEW] Fallback to 8-byte standard C ABI alignment if omitted
+        local safe_align = struct.align or 8
+
+        local tail_rem = offset % safe_align
+        if tail_rem ~= 0 then
+            local tail_pad = safe_align - tail_rem
+            cdef_builder = cdef_builder .. string.format("    uint8_t _pad_tail[%d];\n", tail_pad)
+            offset = offset + tail_pad
+        end
+    end
+
+    cdef_builder = cdef_builder .. "} " .. struct.name .. ";\n\n"
+    struct_sizes[struct.name] = offset
 end
 
--- Run the compiler immediately upon require
-compile_layouts()
-
+ffi.cdef(cdef_builder)
 return M
