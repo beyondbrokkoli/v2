@@ -1,4 +1,3 @@
--- lua/render_queue.lua
 local ffi = require("ffi")
 local manifest = require("pipeline_manifest")
 local bit = require("bit")
@@ -64,6 +63,7 @@ function RenderQueue.init(app_ctx)
                         active_terrain = rts_grid.terrain[peer][i]
                     end
                 end
+
                 gpu_ptr[i].px = vram_template[i].px
                 gpu_ptr[i].pz = vram_template[i].pz
                 gpu_ptr[i].py = Fixed.to_float(composite_elevation)
@@ -79,8 +79,11 @@ function RenderQueue.init(app_ctx)
             packet.gfx_layout = ffi.cast("uint64_t", gfx.pipelineLayout)
             packet.vertex_buffer = ffi.cast("uint64_t", memory.Buffers["MASTER_GPU_BLOCK"])
             packet.index_buffer = ffi.cast("uint64_t", memory.Buffers["MASTER_INDEX_BLOCK"])
-            packet.depth_image = ffi.cast("uint64_t", gfx.depthImage)
-            packet.depth_view = ffi.cast("uint64_t", gfx.depthImageView)
+
+            -- UPDATED: Read Depth Buffer from Swapchain state, not global gfx state
+            packet.depth_image = ffi.cast("uint64_t", sc.depthImage)
+            packet.depth_view = ffi.cast("uint64_t", sc.depthImageView)
+
             packet.width = sc.extent.width
             packet.height = sc.extent.height
 

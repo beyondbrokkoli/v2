@@ -10,9 +10,7 @@ local reg_vk = require("registry_vk")
 local cfg_gfx = require("config_gfx")
 local cfg_sim = require("config_sim")
 local cfg_net = require("config_net")
-
 local NetUtils = require("net_utils")
-
 local WindowAPI = require("window_api")
 local EngineAPI = require("engine_api")
 
@@ -65,10 +63,51 @@ else
     end
 end
 
+-- NEW: Abstracted WSI Handoff Function
+local function RegisterTenantToCCore(win_id, vk_rt, sc_state, sync_state, frame_slots)
+    local wsi = ffi.new("RenderThreadInit")
+    wsi.device = vk_rt.device
+    wsi.queue = vk_rt.queue
+    wsi.transfer_queue = vk_rt.transferQueue
+    wsi.swapchain = sc_state.handle
+
+    -- Unique Per-Window Handles
+    for i = 0, sc_state.imageCount - 1 do
+        wsi.swapchain_images[i] = ffi.cast("uint64_t", sc_state.images[i])
+        wsi.swapchain_views[i] = ffi.cast("uint64_t", sc_state.imageViews[i])
+    end
+    for i = 0, frame_slots - 1 do
+        wsi.image_available[i] = sync_state.imageAvailable[i]
+        wsi.render_finished[i] = sync_state.renderFinished[i]
+        wsi.in_flight[i] = sync_state.inFlight[i]
+    end
+
+    -- Shared Device Pointers (Pulled directly from the Vulkan Device)
+    local vk, dev = vk_rt.vk, vk_rt.device
+    wsi.vkWaitForFences = ffi.cast("void*", vk.vkGetDeviceProcAddr(dev, "vkWaitForFences"))
+    wsi.vkAcquireNextImageKHR = ffi.cast("void*", vk.vkGetDeviceProcAddr(dev, "vkAcquireNextImageKHR"))
+    wsi.vkResetFences = ffi.cast("void*", vk.vkGetDeviceProcAddr(dev, "vkResetFences"))
+    wsi.vkQueueSubmit = ffi.cast("void*", vk.vkGetDeviceProcAddr(dev, "vkQueueSubmit"))
+    wsi.vkQueuePresentKHR = ffi.cast("void*", vk.vkGetDeviceProcAddr(dev, "vkQueuePresentKHR"))
+    wsi.pfnBegin = ffi.cast("void*", vk.vkGetDeviceProcAddr(dev, "vkCmdBeginRenderingKHR"))
+    wsi.pfnEnd = ffi.cast("void*", vk.vkGetDeviceProcAddr(dev, "vkCmdEndRenderingKHR"))
+    wsi.pfnSetCullMode = vk.vkGetDeviceProcAddr(dev, "vkCmdSetCullModeEXT")
+    wsi.pfnSetFrontFace = vk.vkGetDeviceProcAddr(dev, "vkCmdSetFrontFaceEXT")
+    wsi.pfnSetPrimitiveTopology = vk.vkGetDeviceProcAddr(dev, "vkCmdSetPrimitiveTopologyEXT")
+    wsi.pfnSetDepthTestEnable = vk.vkGetDeviceProcAddr(dev, "vkCmdSetDepthTestEnableEXT")
+    wsi.pfnSetDepthWriteEnable = vk.vkGetDeviceProcAddr(dev, "vkCmdSetDepthWriteEnableEXT")
+    wsi.pfnSetDepthCompareOp = vk.vkGetDeviceProcAddr(dev, "vkCmdSetDepthCompareOpEXT")
+
+    -- Push to C-Core
+    EngineAPI.init_stream(win_id, wsi)
+end
+
+-- Inject into app_ctx so sequence.lua can use it
+app_ctx.register_tenant = RegisterTenantToCCore
+
 local function EngineSubmitCommand(ctx, opcode, flags, target_id, target_pos)
     local c_idx = bit.band(ctx.sim_tick_count, cfg_net.RING_MASK)
     local pending_frame = ctx.rollback_arena.frames[c_idx]
-
     if pending_frame.tick ~= ctx.sim_tick_count then
         pending_frame.tick = ctx.sim_tick_count
         for p = 0, cfg_net.MAX_PLAYERS - 1 do
@@ -101,6 +140,7 @@ local function boot_weaver()
     local ctx = {
         win_id = primary_win_id
     }
+
     for i, stage in ipairs(seq.boot) do
         print(string.format("[WEAVER] Executing Stage %d: %s", i, stage.name))
         local signal = stage.action(ctx)
@@ -112,6 +152,7 @@ local function boot_weaver()
             end
         end
     end
+
     return ctx
 end
 
@@ -121,13 +162,11 @@ local temp_vec_far = ffi.new("vec4_t")
 local function matrix_raycast_terrain(mouse_x, mouse_y, screen_w, screen_h, viewProj_inv, grid, net_identity)
     local nx = (mouse_x / screen_w) * 2.0 - 1.0
     local ny = (mouse_y / screen_h) * 2.0 - 1.0
-
     vmath.multiply_mat4_vec4(viewProj_inv, nx, ny, 0.0, 1.0, temp_vec_near)
     vmath.multiply_mat4_vec4(viewProj_inv, nx, ny, 1.0, 1.0, temp_vec_far)
 
     local near_w = 1.0 / temp_vec_near.w
     local ox, oy, oz = temp_vec_near.x * near_w, temp_vec_near.y * near_w, temp_vec_near.z * near_w
-
     local far_w = 1.0 / temp_vec_far.w
     local fx, fy, fz = temp_vec_far.x * far_w, temp_vec_far.y * far_w, temp_vec_far.z * far_w
 
@@ -137,6 +176,7 @@ local function matrix_raycast_terrain(mouse_x, mouse_y, screen_w, screen_h, view
 
     local t = 0.0
     local p = net_identity or 0
+
     if dy < 0.0 then
         local dist_to_ceiling = (10.0 - oy) / dy
         if dist_to_ceiling > 0.0 then t = dist_to_ceiling end
@@ -155,18 +195,18 @@ local function matrix_raycast_terrain(mouse_x, mouse_y, screen_w, screen_h, view
             local max_elevation = 0
             for peer = 0, 7 do
                 local peer_elev = grid.elevation[peer][idx]
-                if peer_elev > max_elevation then
-                    max_elevation = peer_elev
-                end
+                if peer_elev > max_elevation then max_elevation = peer_elev end
             end
             local float_elevation = Fixed.to_float(max_elevation)
             if py <= float_elevation + 0.1 then return idx end
         end
         t = t + (cfg_sim.world.spacing * 0.1)
     end
-    return 65535
+
+    return 65535;
 end
 
+-- UPDATED: Bootstrapper uses the abstracted WSI Handoff
 local function boot_editor_tenant(vk_rt, editor_win_id, width, height)
     print(string.format("[UI BOOTSTRAP] Booting Editor Tenant %d...", editor_win_id))
     WindowAPI.boot(editor_win_id, width, height)
@@ -184,38 +224,10 @@ local function boot_editor_tenant(vk_rt, editor_win_id, width, height)
     local ed_sc = swapchain.Init(vk_rt.vk, vk_rt, width, height, nil, editor_surface)
     local ed_sync = renderer.InitSync(vk_rt.vk, vk_rt.device, app_ctx.cfg_gfx.cfg.frame_slots)
 
-    local wsi = ffi.new("RenderThreadInit")
-    wsi.device = vk_rt.device
-    wsi.queue = vk_rt.queue
-    wsi.swapchain = ed_sc.handle
-
-    for i = 0, ed_sc.imageCount - 1 do
-        wsi.swapchain_images[i] = ffi.cast("uint64_t", ed_sc.images[i])
-        wsi.swapchain_views[i]  = ffi.cast("uint64_t", ed_sc.imageViews[i])
-    end
-    for i = 0, app_ctx.cfg_gfx.cfg.frame_slots - 1 do
-        wsi.image_available[i] = ed_sync.imageAvailable[i]
-        wsi.render_finished[i] = ed_sync.renderFinished[i]
-        wsi.in_flight[i]       = ed_sync.inFlight[i]
-    end
-
-    wsi.vkWaitForFences = ffi.cast("void*", vk_rt.vk.vkGetDeviceProcAddr(vk_rt.device, "vkWaitForFences"))
-    wsi.vkAcquireNextImageKHR = ffi.cast("void*", vk_rt.vk.vkGetDeviceProcAddr(vk_rt.device, "vkAcquireNextImageKHR"))
-    wsi.vkResetFences = ffi.cast("void*", vk_rt.vk.vkGetDeviceProcAddr(vk_rt.device, "vkResetFences"))
-    wsi.vkQueueSubmit = ffi.cast("void*", vk_rt.vk.vkGetDeviceProcAddr(vk_rt.device, "vkQueueSubmit"))
-    wsi.vkQueuePresentKHR = ffi.cast("void*", vk_rt.vk.vkGetDeviceProcAddr(vk_rt.device, "vkQueuePresentKHR"))
-    wsi.pfnBegin = ffi.cast("void*", vk_rt.vk.vkGetDeviceProcAddr(vk_rt.device, "vkCmdBeginRenderingKHR"))
-    wsi.pfnEnd = ffi.cast("void*", vk_rt.vk.vkGetDeviceProcAddr(vk_rt.device, "vkCmdEndRenderingKHR"))
-    wsi.pfnSetCullMode = vk_rt.vk.vkGetDeviceProcAddr(vk_rt.device, "vkCmdSetCullModeEXT")
-    wsi.pfnSetFrontFace = vk_rt.vk.vkGetDeviceProcAddr(vk_rt.device, "vkCmdSetFrontFaceEXT")
-    wsi.pfnSetPrimitiveTopology = vk_rt.vk.vkGetDeviceProcAddr(vk_rt.device, "vkCmdSetPrimitiveTopologyEXT")
-    wsi.pfnSetDepthTestEnable = vk_rt.vk.vkGetDeviceProcAddr(vk_rt.device, "vkCmdSetDepthTestEnableEXT")
-    wsi.pfnSetDepthWriteEnable = vk_rt.vk.vkGetDeviceProcAddr(vk_rt.device, "vkCmdSetDepthWriteEnableEXT")
-    wsi.pfnSetDepthCompareOp = vk_rt.vk.vkGetDeviceProcAddr(vk_rt.device, "vkCmdSetDepthCompareOpEXT")
-
-    EngineAPI.init_stream(editor_win_id, wsi);
-
+    -- Handoff to C-Core using the isolated abstraction
+    RegisterTenantToCCore(editor_win_id, vk_rt, ed_sc, ed_sync, app_ctx.cfg_gfx.cfg.frame_slots)
     print("[UI BOOTSTRAP] Editor Tenant WSI Registered.")
+
     return ed_sc, ed_sync
 end
 
@@ -224,9 +236,7 @@ local function main()
     io.write("> ")
     local user_input = tonumber(io.read("*l")) or 50000
     local local_port = user_input
-    if local_port < 1000 then
-        local_port = 50000 + local_port
-    end
+    if local_port < 1000 then local_port = 50000 + local_port end
 
     assert(net.Host(local_port), "FATAL: Failed to bind local socket port " .. local_port)
     local my_local_ip = get_local_ip()
@@ -250,11 +260,7 @@ local function main()
     }
 
     for p = 0, cfg_net.MAX_PLAYERS - 1 do
-        if p < #status_data.players then
-            ctx.peer_active[p] = true
-        else
-            ctx.peer_active[p] = false
-        end
+        if p < #status_data.players then ctx.peer_active[p] = true else ctx.peer_active[p] = false end
     end
 
     print("[LUA IO] Booting Headless Weaver (LABORATORY)...")
@@ -265,7 +271,7 @@ local function main()
         if not status then error("Fatal Weaver Crash: " .. tostring(engine_ctx)) end
     end
 
-    print("[LUA IO] Weaver sequence complete! Unpacking Context...")
+    print("[LUA IO] Weaver sequence complete! Unpacking Context...");
     local vk_rt = engine_ctx.vk_runtime
     local sc = engine_ctx.sc_state
     local desc = engine_ctx.desc_state
@@ -283,8 +289,8 @@ local function main()
     print("[LUA CO] Initializing VRAM Index Buffer with Strict Topology...")
     local index_ptr = ffi.cast("uint32_t*", memory.Mapped["MASTER_INDEX_BLOCK"])
     local iso_indices = ffi.new("uint32_t[36]", {
-        0, 2, 3,  0, 3, 4,  0, 4, 5,  0, 5, 2,
-        2, 6, 7,  2, 7, 3,  3, 7, 11, 3, 11, 4,
+        0, 2, 3, 0, 3, 4, 0, 4, 5, 0, 5, 2,
+        2, 6, 7, 2, 7, 3, 3, 7, 11, 3, 11, 4,
         4, 11, 10, 4, 10, 5, 5, 10, 6, 5, 6, 2
     })
     ffi.copy(index_ptr, iso_indices, 36 * 4)
@@ -292,8 +298,8 @@ local function main()
     print("[LUA CO] Allocating Direct FFI Render Queues...")
     local MAX_DRAW_COMMANDS = 1024
     local render_queues = ffi.new("DrawCommand[?]", MAX_DRAW_COMMANDS * cfg_gfx.cfg.frame_slots)
+
     local frame_count = 0
- 
     local vmath = require("vmath")
     local pc = ffi.new("PushConstants")
     pc.aos_current_idx, pc.aos_prev_idx = 0, 0
@@ -306,6 +312,7 @@ local function main()
     local wants_hotswap = false
     local master_ptr = ffi.cast("float*", memory.Mapped["MASTER_GPU_BLOCK"])
     local active_render_mode = cfg_gfx.mode.dual
+
     local is_resizing = false
     local last_resize_time = get_time_hires()
     local RESIZE_COOLDOWN = 0.25
@@ -357,7 +364,6 @@ local function main()
         local frame_time = math.max(0.001, math.min(current_time - last_time, 0.25))
         last_time = current_time
 
-        -- GAME INPUT
         local game_mouse_left = WindowAPI.is_mouse_down(ctx.win_id, 0)
         local game_mouse_x, game_mouse_y = WindowAPI.get_mouse_pos(ctx.win_id)
 
@@ -372,15 +378,11 @@ local function main()
                 local is_elevated = false
                 for peer = 0, cfg_net.MAX_PLAYERS - 1 do
                     if ctx.rts_grid.elevation[peer][clicked_idx] > 0 then
-                        is_elevated = true
-                        break
+                        is_elevated = true; break
                     end
                 end
-                if is_elevated then
-                    EngineSubmitCommand(ctx, 2, 0, 0, clicked_idx)
-                else
-                    EngineSubmitCommand(ctx, 1, 0, 0, clicked_idx)
-                end
+                if is_elevated then EngineSubmitCommand(ctx, 2, 0, 0, clicked_idx)
+                else EngineSubmitCommand(ctx, 1, 0, 0, clicked_idx) end
             end
         end
         prev_mouse_left = game_mouse_left and 1 or 0
@@ -416,15 +418,11 @@ local function main()
                 editor_sc, editor_sync = boot_editor_tenant(vk_rt, editor_win_id, 800, 600)
                 editor_booted = true
             else
-                wants_hotswap = true -- If already booted, act as a shader hot-reload!
+                wants_hotswap = true
             end
-        elseif last_key == cfg_gfx.key.num1 then
-            active_render_mode = cfg_gfx.mode.dual
-        elseif last_key == cfg_gfx.key.num2 then
-            active_render_mode = cfg_gfx.mode.geom
-        elseif last_key == cfg_gfx.key.num3 then
-            active_render_mode = cfg_gfx.mode.points
-        end
+        elseif last_key == cfg_gfx.key.num1 then active_render_mode = cfg_gfx.mode.dual
+        elseif last_key == cfg_gfx.key.num2 then active_render_mode = cfg_gfx.mode.geom
+        elseif last_key == cfg_gfx.key.num3 then active_render_mode = cfg_gfx.mode.points end
 
         if is_resizing then
             if (get_time_hires() - last_resize_time) > RESIZE_COOLDOWN then
@@ -433,6 +431,7 @@ local function main()
                     print("\n[LUA CO] Window Stable. Initiating Mini-Weaver Rebuild...")
                     EngineAPI.kill_thread()
                     vk_rt.vk.vkDeviceWaitIdle(vk_rt.device)
+
                     require("graphics_pipeline").Destroy(vk_rt.vk, vk_rt, gfx)
                     require("renderer").Destroy(vk_rt.vk, vk_rt.device, sync, cfg_gfx.cfg.frame_slots)
 
@@ -467,17 +466,18 @@ local function main()
 
                     seq.boot[10].action(new_ctx)
                     print("[LUA CO] Mini-Weaver Rebuild Complete.\n")
+
                     is_resizing = false
                     last_time = get_time_hires()
-                else
-                    last_resize_time = get_time_hires() - (RESIZE_COOLDOWN * 0.9)
                 end
+            else
+                last_resize_time = get_time_hires() - (RESIZE_COOLDOWN * 0.9)
             end
         else
             if not palette_ready and palette_job_id ~= -1 then
                 if memory.IsTransferComplete(vk_rt, palette_job_id) then
                     print("[LUA CO] Async Transfer Complete! Palette Haven Online.")
-                    palette_ready = true
+                    palette_ready = true;
                 end
             end
 
@@ -488,13 +488,11 @@ local function main()
             camera_mod.get_matrices(cam, sc.extent.width, sc.extent.height, pc.viewProj, inv_vp)
 
             if editor_booted then
-                -- Mathematically isolated!
                 local ed_mouse_x, ed_mouse_y = WindowAPI.get_mouse_pos(editor_win_id)
                 camera_mod.update(editor_cam, frame_time, ed_mouse_x, ed_mouse_y, 800, 600, editor_win_id)
                 camera_mod.get_matrices(editor_cam, 800, 600, ed_pc.viewProj, ed_inv_vp)
             end
 
-            -- 1. GAME TENANT
             local game_idx = EngineAPI.acquire_render_packet()
             if game_idx ~= -1 then
                 local alpha = ctx.accumulator / FIXED_DT
@@ -513,6 +511,7 @@ local function main()
                 frame_count = frame_count + 1
             end
 
+            -- UPDATED: Feed Window 1 packets mapping to its distinct Swapchain/Depth states
             if editor_booted then
                 local editor_idx = EngineAPI.acquire_render_packet()
                 if editor_idx ~= -1 then
@@ -520,7 +519,12 @@ local function main()
                     ed_packet.target_window_id = editor_win_id
                     ed_packet.width = editor_sc.extent.width
                     ed_packet.height = editor_sc.extent.height
-                    ed_packet.draw_count = 0 -- Perfectly blank canvas
+
+                    -- Map isolated Depth Buffer to Editor Packet
+                    ed_packet.depth_image = ffi.cast("uint64_t", editor_sc.depthImage)
+                    ed_packet.depth_view = ffi.cast("uint64_t", editor_sc.depthImageView)
+
+                    ed_packet.draw_count = 0
                     EngineAPI.commit_render_packet(editor_idx)
                 end
             end
@@ -532,20 +536,24 @@ local function main()
     print("[TEARDOWN] Terminating Async Render Thread and Worker Pool...")
     EngineAPI.kill_thread()
     vk_rt.vk.vkDeviceWaitIdle(vk_rt.device)
+
     require("graphics_pipeline").Destroy(vk_rt.vk, vk_rt, gfx)
     require("compute_pipeline").Destroy(vk_rt.vk, vk_rt, engine_ctx.comp_state)
     require("descriptors").Destroy(vk_rt.vk, vk_rt.device, desc)
     require("swapchain").Destroy(vk_rt.vk, vk_rt, sc)
     require("renderer").Destroy(vk_rt.vk, vk_rt.device, sync, cfg_gfx.cfg.frame_slots)
+
     if editor_booted then
         require("swapchain").Destroy(vk_rt.vk, vk_rt, editor_sc)
         require("renderer").Destroy(vk_rt.vk, vk_rt.device, editor_sync, cfg_gfx.cfg.frame_slots)
     end
+
     print("[TEARDOWN] Freeing VRAM and CPU Memory Arenas...")
     memory.DestroyBuffer("MASTER_GPU_BLOCK", vk_rt)
     memory.DestroyBuffer("MASTER_INDEX_BLOCK", vk_rt)
     memory.DestroyBuffer("PALETTE_STAGING", vk_rt)
     memory.DestroyBuffer("PALETTE_HAVEN", vk_rt)
+
     net.Shutdown()
     memory.DestroyTransferSubsystem(vk_rt)
     require("vulkan_core").Destroy(vk_rt, cfg_gfx.cfg)
