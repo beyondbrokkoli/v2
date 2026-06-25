@@ -563,16 +563,26 @@ THREAD_FUNC transfer_thread_loop(void* arg) {
 
 EXPORT void vx_stream_init(int win_id, RenderThreadInit* wsi) {
     if (win_id < 0 || win_id >= MAX_WINDOWS) return;
+
     atomic_store_explicit(&g_wsi_state[win_id], 0, memory_order_release);
-    while (atomic_load_explicit(&g_render_busy[win_id], memory_order_acquire)) { SLEEP_MS(1); }
-    g_window_wsi[win_id] = *wsi;
-    if (win_id == 0) {
-        atomic_store_explicit(&g_ring.ready_idx, -1, memory_order_release);
-        atomic_store_explicit(&g_ring.locked_mask, 0, memory_order_release);
+    while (atomic_load_explicit(&g_render_busy[win_id], memory_order_acquire)) {
+        SLEEP_MS(1);
     }
+
+    g_window_wsi[win_id] = *wsi;
+
+    // [PATCH] Remove the localized ring reset block from here.
+    // It is now safely centralized in vx_thread_kill().
+
     atomic_store_explicit(&g_wsi_state[win_id], 1, memory_order_release);
 }
+
 EXPORT RenderPacket* vx_stream_packet(int idx) {
+    // [PATCH] Guard against -1 index requests from leaked locks
+    if (idx < 0 || idx >= RING_SIZE) {
+        printf("[FATAL] -1 index requests")
+        return NULL;
+    }
     return &g_ring.packets[idx];
 }
 
@@ -912,6 +922,10 @@ EXPORT void vx_thread_kill() {
     vmath_thread_join(g_render_thread);
     vmath_thread_join(g_transfer_thread);
 
+    // [PATCH] Purge the Ring Buffer! Toxic packets and leaked locks die here.
+    atomic_store_explicit(&g_ring.ready_idx, -1, memory_order_release);
+    atomic_store_explicit(&g_ring.locked_mask, 0, memory_order_release);
+
     for (int i = 0; i < MAX_WINDOWS; i++) {
         if (g_window_wsi[i].device) {
             vkDeviceWaitIdle(g_window_wsi[i].device);
@@ -926,7 +940,7 @@ EXPORT void vx_thread_kill() {
         vkDestroyCommandPool(g_window_wsi[0].device, g_transfer_cmd_pool, NULL);
         g_transfer_cmd_pool = VK_NULL_HANDLE;
     }
-    printf("[C-CORE] Async Threads joined, Device idled, and Pools destroyed.\n");
+    printf("[C-CORE] Async Threads joined, Device idled, Ring Purged, and Pools destroyed.\n");
 }
 
 void vx_init_mailbox() {
