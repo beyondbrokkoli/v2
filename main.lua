@@ -428,7 +428,7 @@ local function main()
             if (get_time_hires() - last_resize_time) > RESIZE_COOLDOWN then
                 local new_w, new_h = WindowAPI.get_window_size(ctx.win_id)
                 if new_w > 0 and new_h > 0 then
-                    print("\n[LUA CO] Window Stable. Initiating Mini-Weaver Rebuild...")
+                    print("\n[LUA CO] Window Stable. Initiating Multi-Tenant Rebuild...")
                     EngineAPI.kill_thread()
                     vk_rt.vk.vkDeviceWaitIdle(vk_rt.device)
 
@@ -460,13 +460,26 @@ local function main()
                     end
 
                     require("swapchain").Destroy(vk_rt.vk, vk_rt, sc)
+
+                    -- Apply new states to our local handles
                     sc = new_ctx.sc_state
                     gfx = new_ctx.gfx_state
                     sync = new_ctx.sync_state
 
-                    seq.boot[10].action(new_ctx)
-                    print("[LUA CO] Mini-Weaver Rebuild Complete.\n")
+                    -- FIX 1: Re-register the Primary Tenant FIRST
+                    RegisterTenantToCCore(ctx.win_id, vk_rt, sc, sync, cfg_gfx.cfg.frame_slots)
 
+                    -- FIX 2: Re-register the Editor Tenant (if active) to prevent Thread Amnesia
+                    if editor_booted then
+                        print("[LUA CO] Restoring Editor Tenant WSI handles...")
+                        RegisterTenantToCCore(editor_win_id, vk_rt, editor_sc, editor_sync, cfg_gfx.cfg.frame_slots)
+                    end
+
+                    -- FIX 3: Start Thread ONLY after all WSI states are firmly locked in C-Core
+                    EngineAPI.setup_transfer(vk_rt.tIndex)
+                    EngineAPI.start_thread()
+
+                    print("[LUA CO] Multi-Tenant Rebuild Complete.\n")
                     is_resizing = false
                     last_time = get_time_hires()
                 end
