@@ -580,7 +580,7 @@ EXPORT void vx_stream_init(int win_id, RenderThreadInit* wsi) {
 EXPORT RenderPacket* vx_stream_packet(int idx) {
     // [PATCH] Guard against -1 index requests from leaked locks
     if (idx < 0 || idx >= RING_SIZE) {
-        printf("[FATAL] -1 index requests")
+        printf("[FATAL] -1 index requests");
         return NULL;
     }
     return &g_ring.packets[idx];
