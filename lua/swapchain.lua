@@ -17,14 +17,22 @@ function Swapchain.Init(vk, core_state, width, height, old_swapchain, explicit_s
         return nil
     end
 
+    -- FIX: Decouple Swapchain Extent from Logical Extent
     local actualExtent = surfaceCaps.currentExtent
+    local scWidth, scHeight = width, height
+
+    -- 1. Swapchain Extent: Must obey currentExtent if it's not 0xFFFFFFFF (Vulkan Spec)
     if actualExtent.width ~= 4294967295 then
-        width = math.max(1, tonumber(actualExtent.width))
-        height = math.max(1, tonumber(actualExtent.height))
+        scWidth = math.max(1, tonumber(actualExtent.width))
+        scHeight = math.max(1, tonumber(actualExtent.height))
     else
-        width = math.max(1, math.max(tonumber(surfaceCaps.minImageExtent.width), math.min(tonumber(surfaceCaps.maxImageExtent.width), width)))
-        height = math.max(1, math.max(tonumber(surfaceCaps.minImageExtent.height), math.min(tonumber(surfaceCaps.maxImageExtent.height), height)))
+        scWidth = math.max(1, math.max(tonumber(surfaceCaps.minImageExtent.width), math.min(tonumber(surfaceCaps.maxImageExtent.width), width)))
+        scHeight = math.max(1, math.max(tonumber(surfaceCaps.minImageExtent.height), math.min(tonumber(surfaceCaps.maxImageExtent.height), height)))
     end
+
+    -- 2. Logical Extent: Strictly aligned with the engine's requested dimensions
+    local logicalWidth = math.max(1, math.max(tonumber(surfaceCaps.minImageExtent.width), math.min(tonumber(surfaceCaps.maxImageExtent.width), width)))
+    local logicalHeight = math.max(1, math.max(tonumber(surfaceCaps.minImageExtent.height), math.min(tonumber(surfaceCaps.maxImageExtent.height), height)))
 
     local swapchainInfo = ffi.new("VkSwapchainCreateInfoKHR")
     ffi.fill(swapchainInfo, ffi.sizeof(swapchainInfo))
@@ -34,8 +42,11 @@ function Swapchain.Init(vk, core_state, width, height, old_swapchain, explicit_s
     swapchainInfo.minImageCount = surfaceCaps.minImageCount + 1
     swapchainInfo.imageFormat = vk_format.b8g8r8a8_srgb
     swapchainInfo.imageColorSpace = vk_swapchain.color_space_srgb_nonlinear
-    swapchainInfo.imageExtent.width = width
-    swapchainInfo.imageExtent.height = height
+
+    -- Use scWidth/scHeight for the actual Swapchain images
+    swapchainInfo.imageExtent.width = scWidth
+    swapchainInfo.imageExtent.height = scHeight
+
     swapchainInfo.imageArrayLayers = 1
     swapchainInfo.imageUsage = vk_image.usage_color_attachment
     swapchainInfo.preTransform = surfaceCaps.currentTransform
@@ -73,13 +84,16 @@ function Swapchain.Init(vk, core_state, width, height, old_swapchain, explicit_s
         assert(vk.vkCreateImageView(core_state.device, viewInfo, nil, imageViews + i) == vk_result.success)
     end
 
-    -- NEW: Allocate Reverse-Z Depth Buffer
+    -- Allocate Reverse-Z Depth Buffer (Using Logical Extent)
     local dImgInfo = ffi.new("VkImageCreateInfo")
     ffi.fill(dImgInfo, ffi.sizeof(dImgInfo))
     dImgInfo.sType = vk_struct.image_create
     dImgInfo.imageType = vk_image.type_2d
-    dImgInfo.extent.width = width
-    dImgInfo.extent.height = height
+
+    -- Use logicalWidth/logicalHeight for the Depth Buffer
+    dImgInfo.extent.width = logicalWidth
+    dImgInfo.extent.height = logicalHeight
+
     dImgInfo.extent.depth = 1
     dImgInfo.mipLevels = 1
     dImgInfo.arrayLayers = 1
@@ -121,7 +135,8 @@ function Swapchain.Init(vk, core_state, width, height, old_swapchain, explicit_s
     local pDepthView = ffi.new("VkImageView[1]")
     assert(vk.vkCreateImageView(core_state.device, dViewInfo, nil, pDepthView) == 0)
 
-    print("[SWAPCHAIN] Created successfully with " .. tonumber(imageCount) .. " images & Depth Buffer!")
+    print(string.format("[SWAPCHAIN] Created (SC: %dx%d | Logical: %dx%d) with %d images & Depth Buffer!",
+        scWidth, scHeight, logicalWidth, logicalHeight, imageCount))
 
     return {
         handle = swapchain,
@@ -129,7 +144,8 @@ function Swapchain.Init(vk, core_state, width, height, old_swapchain, explicit_s
         imageViews = imageViews,
         imageCount = imageCount,
         format = vk_format.b8g8r8a8_srgb,
-        extent = { width = width, height = height },
+        -- CRITICAL: Return Logical Extent so the engine renders to the intended viewport
+        extent = { width = logicalWidth, height = logicalHeight },
         depthImage = pDepthImage[0],
         depthMemory = pDepthMemory[0],
         depthImageView = pDepthView[0]
@@ -150,7 +166,6 @@ function Swapchain.Destroy(vk, core_state, sc_state)
         vk.vkDestroySwapchainKHR(core_state.device, sc_state.handle, nil)
     end
 
-    -- NEW: Destroy Depth Buffer
     if sc_state.depthImageView then vk.vkDestroyImageView(core_state.device, sc_state.depthImageView, nil) end
     if sc_state.depthImage then vk.vkDestroyImage(core_state.device, sc_state.depthImage, nil) end
     if sc_state.depthMemory then vk.vkFreeMemory(core_state.device, sc_state.depthMemory, nil) end
